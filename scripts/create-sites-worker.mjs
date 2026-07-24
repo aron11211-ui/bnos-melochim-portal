@@ -1,38 +1,66 @@
-import { copyFile, mkdir, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { extname, join } from "node:path";
 
-const worker = `const htmlHeaders = {
-  "cache-control": "no-store",
-  "content-type": "text/html; charset=utf-8",
-};
-
-function wantsHtml(request) {
-  const accept = request.headers.get("accept") || "";
-  return request.method === "GET" && accept.includes("text/html");
+function contentType(path) {
+  switch (extname(path)) {
+    case ".html":
+      return "text/html; charset=utf-8";
+    case ".js":
+      return "application/javascript; charset=utf-8";
+    case ".css":
+      return "text/css; charset=utf-8";
+    case ".svg":
+      return "image/svg+xml; charset=utf-8";
+    default:
+      return "application/octet-stream";
+  }
 }
 
-async function serveIndex(request, env) {
-  const indexUrl = new URL("/index.html", request.url);
-  const indexRequest = new Request(indexUrl, request);
-  const response = await env.ASSETS.fetch(indexRequest);
-  return new Response(response.body, {
-    status: response.status,
-    headers: htmlHeaders,
+const files = {
+  "/": await readFile("dist/index.html", "utf8"),
+  "/index.html": await readFile("dist/index.html", "utf8"),
+};
+
+for (const file of await readdir("dist/assets")) {
+  files[`/assets/${file}`] = await readFile(join("dist/assets", file), "utf8");
+}
+
+for (const file of ["favicon.svg", "icons.svg"]) {
+  files[`/${file}`] = await readFile(join("dist", file), "utf8");
+}
+
+const worker = `const files = ${JSON.stringify(files)};
+
+function contentType(path) {
+  if (path.endsWith(".html") || path === "/") return "text/html; charset=utf-8";
+  if (path.endsWith(".js")) return "application/javascript; charset=utf-8";
+  if (path.endsWith(".css")) return "text/css; charset=utf-8";
+  if (path.endsWith(".svg")) return "image/svg+xml; charset=utf-8";
+  return "application/octet-stream";
+}
+
+function responseFor(path) {
+  const body = files[path];
+  if (body == null) return undefined;
+  return new Response(body, {
+    headers: {
+      "content-type": contentType(path),
+      "cache-control": path === "/" || path.endsWith(".html") ? "no-store" : "public, max-age=31536000, immutable",
+    },
   });
 }
 
 export default {
-  async fetch(request, env) {
-    const response = await env.ASSETS.fetch(request);
+  async fetch(request) {
+    const url = new URL(request.url);
+    const direct = responseFor(url.pathname);
+    if (direct) return direct;
 
-    if (response.status !== 404) {
-      return response;
+    if (request.method === "GET" && (request.headers.get("accept") || "").includes("text/html")) {
+      return responseFor("/") || new Response("Not found", { status: 404 });
     }
 
-    if (wantsHtml(request)) {
-      return serveIndex(request, env);
-    }
-
-    return response;
+    return new Response("Not found", { status: 404 });
   },
 };
 `;
