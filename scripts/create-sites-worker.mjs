@@ -2,6 +2,9 @@ import { copyFile, mkdir, readdir, readFile, writeFile } from "node:fs/promises"
 import { extname, join } from "node:path";
 
 function contentType(path) {
+  if (path === "/") {
+    return "text/html; charset=utf-8";
+  }
   switch (extname(path)) {
     case ".html":
       return "text/html; charset=utf-8";
