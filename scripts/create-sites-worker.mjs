@@ -11,40 +11,55 @@ function contentType(path) {
       return "text/css; charset=utf-8";
     case ".svg":
       return "image/svg+xml; charset=utf-8";
+    case ".jpg":
+    case ".jpeg":
+      return "image/jpeg";
+    case ".png":
+      return "image/png";
     default:
       return "application/octet-stream";
   }
 }
 
-const files = {
-  "/": await readFile("dist/index.html", "utf8"),
-  "/index.html": await readFile("dist/index.html", "utf8"),
-};
+const files = {};
 
-for (const file of await readdir("dist/assets")) {
-  files[`/assets/${file}`] = await readFile(join("dist/assets", file), "utf8");
+async function addFile(route, filePath) {
+  files[route] = {
+    body: (await readFile(filePath)).toString("base64"),
+    type: contentType(route),
+  };
 }
 
-for (const file of ["favicon.svg", "icons.svg"]) {
-  files[`/${file}`] = await readFile(join("dist", file), "utf8");
+await addFile("/", "dist/index.html");
+await addFile("/index.html", "dist/index.html");
+
+for (const file of await readdir("dist/assets")) {
+  await addFile(`/assets/${file}`, join("dist/assets", file));
+}
+
+for (const entry of await readdir("dist", { withFileTypes: true })) {
+  if (entry.isFile() && entry.name !== "index.html") {
+    await addFile(`/${entry.name}`, join("dist", entry.name));
+  }
 }
 
 const worker = `const files = ${JSON.stringify(files)};
 
-function contentType(path) {
-  if (path.endsWith(".html") || path === "/") return "text/html; charset=utf-8";
-  if (path.endsWith(".js")) return "application/javascript; charset=utf-8";
-  if (path.endsWith(".css")) return "text/css; charset=utf-8";
-  if (path.endsWith(".svg")) return "image/svg+xml; charset=utf-8";
-  return "application/octet-stream";
+function decodeBase64(value) {
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
 }
 
 function responseFor(path) {
-  const body = files[path];
-  if (body == null) return undefined;
-  return new Response(body, {
+  const file = files[path];
+  if (file == null) return undefined;
+  return new Response(decodeBase64(file.body), {
     headers: {
-      "content-type": contentType(path),
+      "content-type": file.type,
       "cache-control": path === "/" || path.endsWith(".html") ? "no-store" : "public, max-age=31536000, immutable",
     },
   });

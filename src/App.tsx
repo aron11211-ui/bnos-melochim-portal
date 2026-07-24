@@ -369,9 +369,12 @@ function Login({ setRole }: { setRole: (role: Role) => void }) {
     navigate(role === "Parent" ? "/parent/dashboard" : "/admin/dashboard");
   };
   return (
-    <main className="min-h-screen bg-[radial-gradient(circle_at_top_left,#f7efd9,transparent_35%),linear-gradient(135deg,#0f2746,#173b63)] px-6 py-10 text-white">
+    <main className="min-h-screen bg-[radial-gradient(circle_at_top_left,#f7efd9,transparent_35%),radial-gradient(circle_at_85%_20%,rgba(123,0,36,.35),transparent_28%),linear-gradient(135deg,#0f2746,#173b63)] px-6 py-10 text-white">
       <div className="mx-auto grid max-w-6xl gap-10 lg:grid-cols-[1.15fr_.85fr] lg:items-center">
         <section>
+          <div className="mb-8 flex h-28 w-28 items-center justify-center rounded-[2rem] border border-gold/30 bg-white p-3 shadow-2xl shadow-burgundy/20">
+            <img src="/bnos-melochim-logo.jpeg" alt="Bnos Melochim logo" className="h-full w-full rounded-3xl object-contain" />
+          </div>
           <div className="mb-8 inline-flex items-center gap-2 rounded-full border border-gold/40 bg-white/10 px-4 py-2 text-sm">
             <ShieldCheck className="h-4 w-4 text-gold" /> Phase 1 local demo application
           </div>
@@ -389,11 +392,17 @@ function Login({ setRole }: { setRole: (role: Role) => void }) {
           </div>
         </section>
         <section className="rounded-3xl border border-white/20 bg-white p-6 text-slate-900 shadow-2xl">
-          <p className="text-sm font-semibold uppercase tracking-[0.2em] text-gold-dark">Demo Login</p>
+          <div className="mb-5 flex items-center gap-4 rounded-2xl bg-ivory p-4">
+            <img src="/bnos-melochim-logo.jpeg" alt="Bnos Melochim logo" className="h-16 w-16 rounded-2xl bg-white object-contain p-1" />
+            <div>
+              <p className="text-sm font-semibold uppercase tracking-[0.2em] text-gold-dark">Demo Login</p>
+              <p className="font-bold text-burgundy">בנות מלכים</p>
+            </div>
+          </div>
           <h2 className="mt-2 text-2xl font-bold text-navy">Choose a portal role</h2>
           <div className="mt-6 grid gap-3">
             {roles.map((role) => (
-              <button key={role} onClick={() => enter(role)} className="rounded-2xl border border-slate-200 bg-ivory px-5 py-4 text-left font-semibold text-navy transition hover:border-gold hover:bg-white hover:shadow-md">
+              <button key={role} onClick={() => enter(role)} className="rounded-2xl border border-slate-200 bg-ivory px-5 py-4 text-left font-semibold text-navy transition hover:border-gold hover:bg-white hover:shadow-md hover:shadow-burgundy/10">
                 Enter as {role}
                 <span className="block text-sm font-normal text-slate-500">
                   {role === "Parent" ? "View one family only" : role === "School Office" ? "Registration, documents, agreements" : role === "Tuition Administrator" ? "Tuition, invoices, collections" : "Dashboards and reports"}
@@ -419,9 +428,11 @@ function Shell({ role, setRole, children }: { role: Role; setRole: (role: null) 
       <aside className={`fixed inset-y-0 left-0 z-50 w-72 border-r border-slate-200 bg-white p-5 shadow-xl transition lg:translate-x-0 ${open ? "translate-x-0" : "-translate-x-full"}`}>
         <div className="flex items-start justify-between">
           <Link to={role === "Parent" ? "/parent/dashboard" : "/admin/dashboard"} className="flex items-center gap-3">
-            <div className="grid h-11 w-11 place-items-center rounded-2xl bg-navy text-gold"><BookOpen /></div>
+            <div className="grid h-13 w-13 place-items-center rounded-2xl border border-gold/40 bg-white p-1 shadow-sm">
+              <img src="/bnos-melochim-logo.jpeg" alt="Bnos Melochim logo" className="h-full w-full rounded-xl object-contain" />
+            </div>
             <div>
-              <p className="font-bold text-navy">Bnos Melochim</p>
+              <p className="font-bold text-burgundy">Bnos Melochim</p>
               <p className="text-xs text-slate-500">{role}</p>
             </div>
           </Link>
@@ -449,7 +460,7 @@ function Shell({ role, setRole, children }: { role: Role; setRole: (role: null) 
           <div className="ml-14 flex items-center justify-between lg:ml-0">
             <div>
               <p className="text-xs font-bold uppercase tracking-[0.2em] text-gold-dark">Private School Operations</p>
-              <h1 className="text-xl font-bold text-navy">Registration & Tuition Management</h1>
+              <h1 className="text-xl font-bold text-burgundy">Registration & Tuition Management</h1>
             </div>
             <span className="hidden rounded-full bg-ivory px-4 py-2 text-sm font-semibold text-navy sm:inline">{role}</span>
           </div>
@@ -559,11 +570,14 @@ function ParentDashboard({ state, family }: { state: AppState; family: Family })
   const missing = docs.filter((d) => ["Missing", "Rejected", "Expired", "Not Started"].includes(d.status)).length;
   return (
     <div className="space-y-6">
-      <Card className="bg-navy text-white">
+      <Card className="bg-[linear-gradient(135deg,#10233f,#7b0024)] text-white">
         <div className="flex flex-col gap-5 md:flex-row md:items-center md:justify-between">
-          <div>
+          <div className="flex items-center gap-5">
+            <img src="/bnos-melochim-logo.jpeg" alt="Bnos Melochim logo" className="hidden h-24 w-24 rounded-3xl bg-white object-contain p-2 shadow-xl md:block" />
+            <div>
             <p className="text-gold">Welcome, {family.name} family</p>
             <h2 className="mt-2 text-3xl font-bold">Registration is {family.registrationPercent}% complete</h2>
+            </div>
           </div>
           <Link className="rounded-2xl bg-gold px-5 py-3 text-center font-bold text-navy" to="/parent/registration">Continue Registration</Link>
         </div>
