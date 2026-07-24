@@ -458,9 +458,12 @@ function Shell({ role, setRole, children }: { role: Role; setRole: (role: null) 
       <section className="lg:pl-72">
         <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/85 px-6 py-4 backdrop-blur">
           <div className="ml-14 flex items-center justify-between lg:ml-0">
-            <div>
-              <p className="text-xs font-bold uppercase tracking-[0.2em] text-gold-dark">Private School Operations</p>
-              <h1 className="text-xl font-bold text-burgundy">Registration & Tuition Management</h1>
+            <div className="flex items-center gap-3">
+              <img src="/bnos-melochim-logo.jpeg" alt="Bnos Melochim logo" className="h-12 w-12 rounded-2xl border border-gold/30 bg-white object-contain p-1 shadow-sm" />
+              <div>
+                <p className="text-xs font-bold uppercase tracking-[0.2em] text-gold-dark">Private School Operations</p>
+                <h1 className="text-lg font-bold text-burgundy sm:text-xl">Registration & Tuition Management</h1>
+              </div>
             </div>
             <span className="hidden rounded-full bg-ivory px-4 py-2 text-sm font-semibold text-navy sm:inline">{role}</span>
           </div>
@@ -573,7 +576,7 @@ function ParentDashboard({ state, family }: { state: AppState; family: Family })
       <Card className="bg-[linear-gradient(135deg,#10233f,#7b0024)] text-white">
         <div className="flex flex-col gap-5 md:flex-row md:items-center md:justify-between">
           <div className="flex items-center gap-5">
-            <img src="/bnos-melochim-logo.jpeg" alt="Bnos Melochim logo" className="hidden h-24 w-24 rounded-3xl bg-white object-contain p-2 shadow-xl md:block" />
+            <img src="/bnos-melochim-logo.jpeg" alt="Bnos Melochim logo" className="h-20 w-20 rounded-3xl bg-white object-contain p-2 shadow-xl sm:h-24 sm:w-24" />
             <div>
             <p className="text-gold">Welcome, {family.name} family</p>
             <h2 className="mt-2 text-3xl font-bold">Registration is {family.registrationPercent}% complete</h2>
