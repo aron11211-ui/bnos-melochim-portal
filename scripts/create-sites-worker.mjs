@@ -56,7 +56,10 @@ export default {
     const direct = responseFor(url.pathname);
     if (direct) return direct;
 
-    if (request.method === "GET" && (request.headers.get("accept") || "").includes("text/html")) {
+    const acceptsHtml = (request.headers.get("accept") || "").includes("text/html");
+    const looksLikeAppRoute = !url.pathname.split("/").pop()?.includes(".");
+
+    if (request.method === "GET" && (acceptsHtml || looksLikeAppRoute)) {
       return responseFor("/") || new Response("Not found", { status: 404 });
     }
 
