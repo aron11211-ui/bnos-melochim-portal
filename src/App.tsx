@@ -40,6 +40,7 @@ import type { AppRole, Profile } from "./lib/supabase";
 import "./App.css";
 
 type Role = AppRole;
+type AccountStatus = "active" | "invited" | "disabled" | "pending_verification";
 type DocStatus =
   | "Not Started"
   | "Missing"
@@ -195,7 +196,14 @@ const roleLabels: Record<Role, string> = {
   registration_office: "Registration Office",
   tuition_office: "Tuition Office",
   school_management: "School Management",
-  super_admin: "Super Admin",
+  super_admin: "System Administration",
+};
+
+const accountStatusLabels: Record<AccountStatus, string> = {
+  active: "Active",
+  invited: "Invited",
+  disabled: "Disabled",
+  pending_verification: "Pending verification",
 };
 
 const roleDescriptions: Record<Role, string> = {
@@ -2095,7 +2103,7 @@ type AccessUser = {
   first_name: string;
   last_name: string;
   role: Role;
-  status: string;
+  status: AccountStatus;
   created_at: string;
 };
 
@@ -2115,6 +2123,11 @@ function UsersAccess({ currentRole, notify }: { currentRole: Role; notify: (mess
   const [inviteMessage, setInviteMessage] = useState<string | null>(null);
   const [inviteError, setInviteError] = useState<string | null>(null);
   const [inviteSetupLink, setInviteSetupLink] = useState<string | null>(null);
+  const [selectedUser, setSelectedUser] = useState<AccessUser | null>(null);
+  const [accessDraft, setAccessDraft] = useState<{ role: Role; status: AccountStatus }>({ role: "parent", status: "active" });
+  const [accessSaving, setAccessSaving] = useState(false);
+  const [accessError, setAccessError] = useState<string | null>(null);
+  const [accessMessage, setAccessMessage] = useState<string | null>(null);
   const [invite, setInvite] = useState({
     email: "",
     first_name: "",
@@ -2156,6 +2169,13 @@ function UsersAccess({ currentRole, notify }: { currentRole: Role; notify: (mess
   });
 
   const selectedFamily = families.find((family) => family.id === invite.family_id);
+
+  const openAccessEditor = (user: AccessUser) => {
+    setSelectedUser(user);
+    setAccessDraft({ role: user.role, status: user.status });
+    setAccessError(null);
+    setAccessMessage(null);
+  };
 
   const validateInvite = () => {
     if (!invite.email.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(invite.email.trim())) return "Enter a valid email address.";
@@ -2231,6 +2251,38 @@ function UsersAccess({ currentRole, notify }: { currentRole: Role; notify: (mess
     await refreshUsers();
   };
 
+  const saveAccessChanges = async () => {
+    setAccessError(null);
+    setAccessMessage(null);
+    if (!selectedUser) return;
+    if (currentRole !== "super_admin") return setAccessError("Only System Administration can change roles or account status.");
+    if (!supabase) return setAccessError("Supabase is not configured.");
+    const { data: sessionData } = await supabase.auth.getSession();
+    const { data: refreshedSessionData } = await supabase.auth.refreshSession();
+    const accessToken = refreshedSessionData.session?.access_token ?? sessionData.session?.access_token;
+    if (!accessToken) return setAccessError("Your session expired. Please sign out and sign in again.");
+
+    setAccessSaving(true);
+    const { data, error } = await supabase.functions.invoke("update-user-access", {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      body: {
+        userId: selectedUser.id,
+        role: accessDraft.role,
+        status: accessDraft.status,
+      },
+    });
+    setAccessSaving(false);
+
+    if (error || data?.error) {
+      return setAccessError(typeof data?.error === "string" ? data.error : error?.message || "User access could not be updated.");
+    }
+
+    setAccessMessage("User access updated.");
+    notify("User access updated.");
+    await refreshUsers();
+    setSelectedUser((current) => current ? { ...current, role: accessDraft.role, status: accessDraft.status } : current);
+  };
+
   return (
     <div className="space-y-6">
       <PageTitle title="Users & Access" subtitle="Invite users, assign roles, disable accounts, reactivate access, and review recent activity." />
@@ -2293,7 +2345,7 @@ function UsersAccess({ currentRole, notify }: { currentRole: Role; notify: (mess
               <option value="registration_office">Registration Office</option>
               <option value="tuition_office">Tuition Office</option>
               <option value="school_management">School Management</option>
-              <option value="super_admin">Super Admin</option>
+              <option value="super_admin">System Administration</option>
             </select>
           </div>
         </div>
@@ -2303,13 +2355,54 @@ function UsersAccess({ currentRole, notify }: { currentRole: Role; notify: (mess
           <tr key={user.id}>
             <td><p className="font-bold text-navy">{[user.first_name, user.last_name].filter(Boolean).join(" ") || user.email}</p><p className="text-sm text-slate-500">{user.email}</p></td>
             <td>{roleLabels[user.role]}</td>
-            <td><StatusBadge status={user.status} /></td>
+            <td><StatusBadge status={accountStatusLabels[user.status] ?? user.status} /></td>
             <td className="text-slate-600">{formatDate(user.created_at?.slice(0, 10))}</td>
-            <td><button onClick={() => notify("Access-management actions are handled by the update-user-access Edge Function.")} className="rounded-lg border px-3 py-1.5 text-sm font-semibold hover:bg-ivory">Manage</button></td>
+            <td><button onClick={() => openAccessEditor(user)} className="rounded-lg border px-3 py-1.5 text-sm font-semibold hover:bg-ivory">Manage</button></td>
           </tr>
         ))}
       </Table>
       {!loading && !filteredUsers.length && <Empty />}
+      {selectedUser && (
+        <Card className="border-gold/50">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h3 className="text-xl font-bold text-navy">Manage user access</h3>
+              <p className="mt-1 text-sm text-slate-600">{[selectedUser.first_name, selectedUser.last_name].filter(Boolean).join(" ") || selectedUser.email} · {selectedUser.email}</p>
+            </div>
+            <button className="rounded-xl border px-3 py-2 text-sm font-bold text-slate-600 hover:bg-ivory" onClick={() => setSelectedUser(null)}>Close</button>
+          </div>
+          {currentRole !== "super_admin" && <p className="mt-4 rounded-xl border border-gold/40 bg-gold/10 p-3 text-sm font-semibold text-navy">Only System Administration can change roles or account status.</p>}
+          {accessError && <p className="mt-4 rounded-xl border border-red-200 bg-red-50 p-3 text-sm font-semibold text-red-700">{accessError}</p>}
+          {accessMessage && <p className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm font-semibold text-emerald-800">{accessMessage}</p>}
+          <div className="mt-5 grid gap-4 md:grid-cols-2">
+            <label className="text-sm font-semibold text-slate-700">
+              Role
+              <select disabled={currentRole !== "super_admin" || accessSaving} className="mt-1 w-full rounded-xl border px-4 py-3 disabled:bg-slate-50" value={accessDraft.role} onChange={(event) => setAccessDraft({ ...accessDraft, role: event.target.value as Role })}>
+                <option value="parent">Parent Portal</option>
+                <option value="registration_office">Registration Office</option>
+                <option value="tuition_office">Tuition Office</option>
+                <option value="school_management">School Management</option>
+                <option value="super_admin">System Administration</option>
+              </select>
+            </label>
+            <label className="text-sm font-semibold text-slate-700">
+              Account status
+              <select disabled={currentRole !== "super_admin" || accessSaving} className="mt-1 w-full rounded-xl border px-4 py-3 disabled:bg-slate-50" value={accessDraft.status} onChange={(event) => setAccessDraft({ ...accessDraft, status: event.target.value as AccountStatus })}>
+                <option value="active">Active</option>
+                <option value="invited">Invited</option>
+                <option value="pending_verification">Pending verification</option>
+                <option value="disabled">Disabled</option>
+              </select>
+            </label>
+          </div>
+          <div className="mt-5 flex flex-wrap gap-3">
+            <button disabled={currentRole !== "super_admin" || accessSaving} className="rounded-xl bg-burgundy px-5 py-3 font-bold text-white hover:bg-burgundy-dark disabled:opacity-50" onClick={() => void saveAccessChanges()}>
+              {accessSaving ? "Saving..." : "Save access changes"}
+            </button>
+            <button className="rounded-xl border border-slate-200 px-5 py-3 font-bold text-navy hover:bg-ivory" onClick={() => setAccessDraft({ role: selectedUser.role, status: selectedUser.status })}>Reset changes</button>
+          </div>
+        </Card>
+      )}
     </div>
   );
 }
