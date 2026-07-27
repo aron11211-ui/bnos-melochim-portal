@@ -92,6 +92,7 @@ Deno.serve(async (request) => {
       });
     }
 
+    let setupUrl: string | null = null;
     const { data: invited, error: inviteError } = await admin.auth.admin.inviteUserByEmail(body.email, {
       redirectTo: productionInviteRedirect,
       data: {
@@ -102,10 +103,43 @@ Deno.serve(async (request) => {
       },
     });
 
-    if (inviteError || !invited.user) {
-      return json(request, { error: safeInviteError(inviteError?.message) }, 400);
+    let invitedUser = invited.user;
+    if (inviteError || !invitedUser) {
+      const { data: generated, error: generateError } = await admin.auth.admin.generateLink({
+        type: "invite",
+        email: body.email,
+        options: {
+          redirectTo: productionInviteRedirect,
+          data: {
+            first_name: body.first_name,
+            last_name: body.last_name,
+            phone: body.phone ?? "",
+            role: body.role,
+          },
+        },
+      });
+      invitedUser = generated?.user ?? null;
+      setupUrl = generated?.properties?.action_link ?? null;
+      if (generateError || !invitedUser || !setupUrl) {
+        return json(request, { error: safeInviteError(inviteError?.message || generateError?.message) }, 400);
+      }
     }
-    const invitedUser = invited.user;
+    if (!setupUrl) {
+      const { data: generated } = await admin.auth.admin.generateLink({
+        type: "invite",
+        email: body.email,
+        options: {
+          redirectTo: productionInviteRedirect,
+          data: {
+            first_name: body.first_name,
+            last_name: body.last_name,
+            phone: body.phone ?? "",
+            role: body.role,
+          },
+        },
+      });
+      setupUrl = generated?.properties?.action_link ?? null;
+    }
 
     const profilePayload = {
       id: invitedUser.id,
@@ -163,6 +197,7 @@ Deno.serve(async (request) => {
       role: body.role,
       user_id: invitedUser.id,
       family_name: familyName,
+      setup_url: setupUrl,
       message: familyName ? `Invitation sent to ${body.email} for ${familyName}.` : `Invitation sent to ${body.email}.`,
     });
   } catch {

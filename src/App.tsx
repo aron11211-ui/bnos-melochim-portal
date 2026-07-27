@@ -1679,6 +1679,7 @@ function UsersAccess({ currentRole, notify }: { currentRole: Role; notify: (mess
   const [inviting, setInviting] = useState(false);
   const [inviteMessage, setInviteMessage] = useState<string | null>(null);
   const [inviteError, setInviteError] = useState<string | null>(null);
+  const [inviteSetupLink, setInviteSetupLink] = useState<string | null>(null);
   const [invite, setInvite] = useState({
     email: "",
     first_name: "",
@@ -1734,6 +1735,7 @@ function UsersAccess({ currentRole, notify }: { currentRole: Role; notify: (mess
     event.preventDefault();
     setInviteError(null);
     setInviteMessage(null);
+    setInviteSetupLink(null);
     const validationError = validateInvite();
     if (validationError) return setInviteError(validationError);
     if (!supabase) return setInviteError("Supabase is not configured.");
@@ -1776,9 +1778,19 @@ function UsersAccess({ currentRole, notify }: { currentRole: Role; notify: (mess
       return setInviteError(message);
     }
 
-    const success = typeof data?.message === "string" ? data.message : selectedFamily ? `Invitation sent to ${invite.email.trim()} for ${selectedFamily.family_name}.` : `Invitation sent to ${invite.email.trim()}.`;
+    const setupLink = typeof data?.setup_url === "string" && data.setup_url ? data.setup_url : null;
+    const success = setupLink
+      ? selectedFamily
+        ? `Invitation created for ${invite.email.trim()} for ${selectedFamily.family_name}. Copy the setup link below.`
+        : `Invitation created for ${invite.email.trim()}. Copy the setup link below.`
+      : typeof data?.message === "string"
+        ? data.message
+        : selectedFamily
+          ? `Invitation sent to ${invite.email.trim()} for ${selectedFamily.family_name}.`
+          : `Invitation sent to ${invite.email.trim()}.`;
     setInviteMessage(success);
-    notify(`Invitation sent to ${invite.email.trim()}.`);
+    setInviteSetupLink(setupLink);
+    notify(setupLink ? `Invitation setup link created for ${invite.email.trim()}.` : `Invitation sent to ${invite.email.trim()}.`);
     setInvite({ email: "", first_name: "", last_name: "", phone: "", role: "parent", family_id: "" });
     await refreshUsers();
   };
@@ -1799,6 +1811,22 @@ function UsersAccess({ currentRole, notify }: { currentRole: Role; notify: (mess
           </div>
           {inviteMessage && <p className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm font-semibold text-emerald-800">{inviteMessage}</p>}
           {inviteError && <p className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm font-semibold text-red-700">{inviteError}</p>}
+          {inviteSetupLink && (
+            <div className="rounded-xl border border-gold/40 bg-gold/10 p-3 text-sm text-navy">
+              <p className="font-bold">One-time password setup link</p>
+              <p className="mt-1 text-slate-700">Share this only with the invited user. It expires and can be used once.</p>
+              <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+                <input readOnly value={inviteSetupLink} className="min-w-0 flex-1 rounded-xl border border-gold/40 bg-white px-3 py-2 text-xs text-slate-700" aria-label="Invitation setup link" />
+                <button
+                  type="button"
+                  onClick={() => void navigator.clipboard.writeText(inviteSetupLink).then(() => notify("Setup link copied."))}
+                  className="rounded-xl bg-navy px-4 py-2 font-bold text-white hover:bg-slate-800"
+                >
+                  Copy setup link
+                </button>
+              </div>
+            </div>
+          )}
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
             <label className="text-sm font-semibold text-slate-700">Email<input className="mt-1 w-full rounded-xl border px-4 py-3" type="email" value={invite.email} onChange={(event) => setInvite({ ...invite, email: event.target.value })} /></label>
             <label className="text-sm font-semibold text-slate-700">First name<input className="mt-1 w-full rounded-xl border px-4 py-3" value={invite.first_name} onChange={(event) => setInvite({ ...invite, first_name: event.target.value })} /></label>
