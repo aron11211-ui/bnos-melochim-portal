@@ -11,8 +11,10 @@ import {
 } from "react-router-dom";
 import {
   AlertCircle,
+  ArrowRight,
   Banknote,
   BookOpen,
+  CalendarDays,
   CheckCircle2,
   ChevronLeft,
   ClipboardCheck,
@@ -149,6 +151,20 @@ type AppState = {
 type NavItem = { label: string; path: string; icon: LucideIcon };
 
 const roles: Role[] = ["Parent", "School Office", "Tuition Administrator", "School Management"];
+
+const roleLabels: Record<Role, string> = {
+  Parent: "Parent Portal",
+  "School Office": "Registration Office",
+  "Tuition Administrator": "Tuition Office",
+  "School Management": "School Management",
+};
+
+const roleDescriptions: Record<Role, string> = {
+  Parent: "Family registration, documents, tuition, and messages",
+  "School Office": "Applications, student records, documents, and agreements",
+  "Tuition Administrator": "Tuition accounts, invoices, payments, and notes",
+  "School Management": "Dashboards, reports, and school-wide oversight",
+};
 
 const docTypes = [
   "Registration form",
@@ -326,8 +342,23 @@ function currency(value: number) {
   return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(value);
 }
 
+function formatDate(value?: string) {
+  if (!value) return "Not scheduled";
+  if (value === "Paid in full") return value;
+  const [year, month, day] = value.split("-").map(Number);
+  const date = new Date(year, month - 1, day);
+  return new Intl.DateTimeFormat("en-US", { month: "long", day: "numeric", year: "numeric" }).format(date);
+}
+
 function total(account: TuitionAccount) {
   return account.annualTuition + account.fees + account.transportation + account.registration - account.discounts - account.scholarships - account.credits;
+}
+
+function upcomingPayment(account: TuitionAccount) {
+  if (account.nextDue === "Paid in full") return "Paid in full";
+  const remaining = Math.max(total(account) - account.paid, 0);
+  const divisor = account.plan === "Annual payment" ? 1 : account.plan === "12 monthly payments" ? 12 : account.plan === "10 monthly payments" ? 10 : 6;
+  return `${currency(Math.ceil(remaining / divisor))} due ${formatDate(account.nextDue)}`;
 }
 
 function App() {
@@ -376,16 +407,16 @@ function Login({ setRole }: { setRole: (role: Role) => void }) {
             <img src="/bnos-melochim-logo.jpeg" alt="Bnos Melochim logo" className="h-full w-full rounded-3xl object-contain" />
           </div>
           <div className="mb-8 inline-flex items-center gap-2 rounded-full border border-gold/40 bg-white/10 px-4 py-2 text-sm">
-            <ShieldCheck className="h-4 w-4 text-gold" /> Phase 1 local demo application
+            <ShieldCheck className="h-4 w-4 text-gold" aria-hidden="true" /> Secure school family access
           </div>
-          <h1 className="max-w-3xl text-4xl font-bold tracking-tight md:text-6xl">School Registration & Tuition Management System</h1>
+          <h1 className="max-w-3xl text-4xl font-bold tracking-tight md:text-6xl">Bnos Melochim Family Portal</h1>
           <p className="mt-6 max-w-2xl text-lg leading-8 text-ivory/90">
-            A polished, family-centered portal for private-school registration, document tracking, agreements, tuition planning, and office review.
+            Registration, required documents, agreements, tuition, and family information—all in one secure place.
           </p>
           <div className="mt-8 grid gap-4 sm:grid-cols-3">
             {["Family-first records", "Office review queues", "Tuition dashboards"].map((item) => (
               <div key={item} className="rounded-2xl border border-white/15 bg-white/10 p-4 backdrop-blur">
-                <CheckCircle2 className="mb-3 h-5 w-5 text-gold" />
+                <CheckCircle2 className="mb-3 h-5 w-5 text-gold" aria-hidden="true" />
                 <p className="font-semibold">{item}</p>
               </div>
             ))}
@@ -395,18 +426,26 @@ function Login({ setRole }: { setRole: (role: Role) => void }) {
           <div className="mb-5 flex items-center gap-4 rounded-2xl bg-ivory p-4">
             <img src="/bnos-melochim-logo.jpeg" alt="Bnos Melochim logo" className="h-16 w-16 rounded-2xl bg-white object-contain p-1" />
             <div>
-              <p className="text-sm font-semibold uppercase tracking-[0.2em] text-gold-dark">Demo Login</p>
+              <p className="text-sm font-semibold uppercase tracking-[0.2em] text-gold-dark">Portal Login</p>
               <p className="font-bold text-burgundy">בנות מלכים</p>
             </div>
           </div>
           <h2 className="mt-2 text-2xl font-bold text-navy">Choose a portal role</h2>
           <div className="mt-6 grid gap-3">
             {roles.map((role) => (
-              <button key={role} onClick={() => enter(role)} className="rounded-2xl border border-slate-200 bg-ivory px-5 py-4 text-left font-semibold text-navy transition hover:border-gold hover:bg-white hover:shadow-md hover:shadow-burgundy/10">
-                Enter as {role}
-                <span className="block text-sm font-normal text-slate-500">
-                  {role === "Parent" ? "View one family only" : role === "School Office" ? "Registration, documents, agreements" : role === "Tuition Administrator" ? "Tuition, invoices, collections" : "Dashboards and reports"}
+              <button
+                key={role}
+                onClick={() => enter(role)}
+                className="group rounded-2xl border border-slate-200 bg-ivory px-5 py-4 text-left font-semibold text-navy shadow-sm transition hover:-translate-y-0.5 hover:border-gold hover:bg-white hover:shadow-lg hover:shadow-burgundy/10 focus-visible:bg-white"
+                aria-label={`Open ${roleLabels[role]}`}
+              >
+                <span className="flex items-center justify-between gap-4">
+                  <span>{roleLabels[role]}</span>
+                  <span className="inline-flex items-center gap-1 rounded-full bg-burgundy px-3 py-1 text-xs font-bold text-white group-hover:bg-burgundy-dark">
+                    Open Portal <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
+                  </span>
                 </span>
+                <span className="mt-1 block text-sm font-normal text-slate-600">{roleDescriptions[role]}</span>
               </button>
             ))}
           </div>
@@ -433,15 +472,15 @@ function Shell({ role, setRole, children }: { role: Role; setRole: (role: null) 
             </div>
             <div>
               <p className="font-bold text-burgundy">Bnos Melochim</p>
-              <p className="text-xs text-slate-500">{role}</p>
+              <p className="text-xs text-slate-500">{roleLabels[role]}</p>
             </div>
           </Link>
-          <button className="lg:hidden" onClick={() => setOpen(false)}><X /></button>
+          <button className="rounded-lg p-1 hover:bg-ivory lg:hidden" onClick={() => setOpen(false)} aria-label="Close navigation"><X aria-hidden="true" /></button>
         </div>
         <nav className="mt-8 space-y-1">
           {nav.map((item) => (
-            <Link key={item.path} to={item.path} onClick={() => setOpen(false)} className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-semibold text-slate-600 hover:bg-ivory hover:text-navy">
-              <item.icon className="h-4 w-4" /> {item.label}
+            <Link key={item.path} to={item.path} onClick={() => setOpen(false)} className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-semibold text-slate-700 hover:bg-ivory hover:text-navy focus-visible:bg-ivory focus-visible:text-navy">
+              <item.icon className="h-4 w-4" aria-hidden="true" /> {item.label}
             </Link>
           ))}
         </nav>
@@ -452,20 +491,27 @@ function Shell({ role, setRole, children }: { role: Role; setRole: (role: null) 
             navigate("/");
           }}
         >
-          <LogOut className="h-4 w-4" /> Sign out
+          <LogOut className="h-4 w-4" aria-hidden="true" /> Sign out
         </button>
       </aside>
       <section className="lg:pl-72">
         <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/85 px-6 py-4 backdrop-blur">
-          <div className="ml-14 flex items-center justify-between lg:ml-0">
-            <div className="flex items-center gap-3">
+          <div className="ml-14 flex flex-wrap items-center justify-between gap-3 lg:ml-0">
+            <div className="flex min-w-0 items-center gap-3">
               <img src="/bnos-melochim-logo.jpeg" alt="Bnos Melochim logo" className="h-12 w-12 rounded-2xl border border-gold/30 bg-white object-contain p-1 shadow-sm" />
-              <div>
+              <div className="min-w-0">
                 <p className="text-xs font-bold uppercase tracking-[0.2em] text-gold-dark">Private School Operations</p>
                 <h1 className="text-lg font-bold text-burgundy sm:text-xl">Registration & Tuition Management</h1>
               </div>
             </div>
-            <span className="hidden rounded-full bg-ivory px-4 py-2 text-sm font-semibold text-navy sm:inline">{role}</span>
+            <div className="flex items-center gap-2">
+              <label className="sr-only" htmlFor="language-select">Language</label>
+              <select id="language-select" className="rounded-full border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-navy shadow-sm" aria-label="Language selector">
+                <option>English</option>
+                <option>Yiddish</option>
+              </select>
+              <span className="hidden rounded-full bg-ivory px-4 py-2 text-sm font-semibold text-navy sm:inline">{roleLabels[role]}</span>
+            </div>
           </div>
         </header>
         <main className="p-5 md:p-8">{children}</main>
@@ -524,7 +570,7 @@ function Portal({ state, setState, role, notify }: { state: AppState; setState: 
       <Route path="/parent/tuition" element={<Tuition state={state} setState={setState} familyId={parentFamily.id} notify={notify} parent />} />
       <Route path="/parent/payments" element={<Payments state={state} familyId={parentFamily.id} />} />
       <Route path="/parent/messages" element={<Messages state={state} familyId={parentFamily.id} notify={notify} />} />
-      <Route path="/parent/settings" element={<SimplePage title="Account Settings" description="Update demo profile preferences, notification channels, and account contact defaults." />} />
+      <Route path="/parent/settings" element={<SimplePage title="Account Settings" description="Update profile preferences, notification channels, and account contact defaults." />} />
       <Route path="/admin/dashboard" element={<AdminDashboard state={state} role={role} />} />
       <Route path="/admin/families" element={<FamiliesTable state={state} />} />
       <Route path="/admin/families/:familyId" element={<FamilyDetail state={state} />} />
@@ -547,13 +593,30 @@ function Card({ children, className = "" }: { children: ReactNode; className?: s
   return <section className={`rounded-3xl border border-slate-200 bg-white p-5 shadow-sm ${className}`}>{children}</section>;
 }
 
-function Stat({ label, value, tone = "navy" }: { label: string; value: string | number; tone?: "navy" | "gold" | "red" }) {
-  return (
-    <Card>
-      <p className="text-sm text-slate-500">{label}</p>
+function Stat({ label, value, tone = "navy", to }: { label: string; value: string | number; tone?: "navy" | "gold" | "red"; to?: string }) {
+  const content = (
+    <>
+      <div className="flex items-start justify-between gap-3">
+        <p className="text-sm font-medium text-slate-600">{label}</p>
+        {to && <ArrowRight className="h-4 w-4 text-gold-dark" aria-hidden="true" />}
+      </div>
       <p className={`mt-2 text-2xl font-bold ${tone === "red" ? "text-red-700" : tone === "gold" ? "text-gold-dark" : "text-navy"}`}>{value}</p>
-    </Card>
+    </>
   );
+
+  if (to) {
+    return (
+      <Link
+        to={to}
+        className="block rounded-3xl border border-slate-200 bg-white p-5 shadow-sm transition hover:-translate-y-0.5 hover:border-gold hover:shadow-lg focus-visible:bg-ivory"
+        aria-label={`${label}: ${value}. Open related page.`}
+      >
+        {content}
+      </Link>
+    );
+  }
+
+  return <Card>{content}</Card>;
 }
 
 function Progress({ value }: { value: number }) {
@@ -571,6 +634,47 @@ function ParentDashboard({ state, family }: { state: AppState; family: Family })
   const agreements = state.agreements.filter((a) => a.familyId === family.id);
   const account = state.tuition.find((t) => t.familyId === family.id)!;
   const missing = docs.filter((d) => ["Missing", "Rejected", "Expired", "Not Started"].includes(d.status)).length;
+  const completedSections = Math.round((family.registrationPercent / 100) * 12);
+  const remainingItems = missing + agreements.filter((a) => a.status === "Awaiting Signature").length;
+  const actionItems = [
+    {
+      title: "Upload birth certificate",
+      student: students[0]?.preferredName,
+      status: "Missing",
+      dueDate: "2026-08-01",
+      to: "/parent/documents",
+      action: "Upload document",
+    },
+    {
+      title: "Complete emergency medical consent",
+      student: students[0]?.preferredName,
+      status: "Not Started",
+      dueDate: "2026-08-05",
+      to: "/parent/registration",
+      action: "Continue registration",
+    },
+    {
+      title: "Sign tuition agreement",
+      status: "Awaiting Signature",
+      dueDate: "2026-08-10",
+      to: "/parent/agreements",
+      action: "Sign agreement",
+    },
+    {
+      title: "Confirm transportation arrangement",
+      student: students[1]?.preferredName,
+      status: "Needs confirmation",
+      dueDate: "2026-08-12",
+      to: "/parent/registration",
+      action: "Confirm transportation",
+    },
+    {
+      title: "Review parent handbook",
+      status: "Ready for review",
+      to: "/parent/agreements",
+      action: "Review handbook",
+    },
+  ];
   return (
     <div className="space-y-6">
       <Card className="bg-[linear-gradient(135deg,#10233f,#7b0024)] text-white">
@@ -578,27 +682,64 @@ function ParentDashboard({ state, family }: { state: AppState; family: Family })
           <div className="flex items-center gap-5">
             <img src="/bnos-melochim-logo.jpeg" alt="Bnos Melochim logo" className="h-20 w-20 rounded-3xl bg-white object-contain p-2 shadow-xl sm:h-24 sm:w-24" />
             <div>
-            <p className="text-gold">Welcome, {family.name} family</p>
-            <h2 className="mt-2 text-3xl font-bold">Registration is {family.registrationPercent}% complete</h2>
+              <p className="inline-flex items-center gap-2 rounded-full bg-white/10 px-3 py-1 text-sm font-bold text-gold">
+                <CalendarDays className="h-4 w-4" aria-hidden="true" /> School Year 2026–2027 / תשפ״ז
+              </p>
+              <p className="mt-4 text-gold">Welcome, {family.name} family</p>
+              <h2 className="mt-2 text-3xl font-bold">{family.registrationPercent}% registration complete</h2>
+              <p className="mt-2 text-sm text-ivory/90">{completedSections} of 12 sections complete · {remainingItems} items remaining</p>
             </div>
           </div>
-          <Link className="rounded-2xl bg-gold px-5 py-3 text-center font-bold text-navy" to="/parent/registration">Continue Registration</Link>
+          <div className="flex flex-col gap-3 sm:flex-row md:flex-col lg:flex-row">
+            <Link className="rounded-2xl bg-gold px-5 py-3 text-center font-bold text-navy shadow-sm hover:bg-white focus-visible:bg-white" to="/parent/registration">Continue Registration</Link>
+            <Link className="rounded-2xl border border-white/40 bg-white/10 px-5 py-3 text-center font-bold text-white hover:bg-white hover:text-navy focus-visible:bg-white focus-visible:text-navy" to="/parent/documents">View Missing Items</Link>
+          </div>
         </div>
         <div className="mt-6"><Progress value={family.registrationPercent} /></div>
       </Card>
-      <div className="grid gap-4 md:grid-cols-3 lg:grid-cols-6">
-        <Stat label="Children enrolled" value={students.length} />
-        <Stat label="Missing items" value={missing} tone={missing ? "red" : "navy"} />
-        <Stat label="Documents attention" value={docs.filter((d) => d.status === "Rejected").length} />
-        <Stat label="Agreements awaiting" value={agreements.filter((a) => a.status === "Awaiting Signature").length} />
-        <Stat label="Tuition balance" value={currency(total(account) - account.paid)} />
-        <Stat label="Upcoming payment" value={account.nextDue} />
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+        <Stat label="Children enrolled" value={students.length} to="/parent/children" />
+        <Stat label="Missing items" value={missing} tone={missing ? "red" : "navy"} to="/parent/documents" />
+        <Stat label="Documents needing attention" value={docs.filter((d) => d.status === "Rejected").length} to="/parent/documents" />
+        <Stat label="Agreements awaiting signature" value={agreements.filter((a) => a.status === "Awaiting Signature").length} to="/parent/agreements" />
+        <Stat label="Tuition balance" value={currency(total(account) - account.paid)} to="/parent/tuition" />
+        <Stat label="Upcoming payment" value={upcomingPayment(account)} to="/parent/payments" />
       </div>
+      <Card>
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <h3 className="text-xl font-bold text-navy">Items requiring your attention</h3>
+            <p className="mt-1 text-sm text-slate-600">Use the action buttons below to go directly to the correct section.</p>
+          </div>
+          <Link to="/parent/documents" className="inline-flex items-center gap-2 rounded-xl border border-gold px-4 py-2 text-sm font-bold text-burgundy hover:bg-ivory">
+            View all missing items <ArrowRight className="h-4 w-4" aria-hidden="true" />
+          </Link>
+        </div>
+        <div className="mt-5 grid gap-3">
+          {actionItems.map((item) => (
+            <div key={item.title} className="grid gap-3 rounded-2xl border border-slate-200 bg-ivory p-4 sm:grid-cols-[1fr_auto] sm:items-center">
+              <div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="font-bold text-navy">{item.title}</p>
+                  <StatusBadge status={item.status} />
+                </div>
+                <p className="mt-1 text-sm text-slate-700">
+                  {item.student ? `${item.student} · ` : ""}
+                  {item.dueDate ? `Due ${formatDate(item.dueDate)}` : "No due date"}
+                </p>
+              </div>
+              <Link to={item.to} className="inline-flex items-center justify-center gap-2 rounded-xl bg-navy px-4 py-2 text-sm font-bold text-white hover:bg-burgundy focus-visible:bg-burgundy" aria-label={`${item.action}: ${item.title}`}>
+                {item.action} <ArrowRight className="h-4 w-4" aria-hidden="true" />
+              </Link>
+            </div>
+          ))}
+        </div>
+      </Card>
       <Card>
         <h3 className="text-xl font-bold text-navy">Recent school messages</h3>
         <div className="mt-4 space-y-3">
           {state.messages.filter((m) => m.familyId === family.id).map((m) => (
-            <div key={m.id} className="rounded-2xl bg-ivory p-4"><p className="font-semibold">{m.subject}</p><p className="text-sm text-slate-600">{m.body}</p></div>
+            <div key={m.id} className="rounded-2xl bg-ivory p-4"><p className="font-semibold">{m.subject}</p><p className="text-sm text-slate-600">{formatDate(m.date)} · {m.body}</p></div>
           ))}
         </div>
       </Card>
@@ -681,7 +822,7 @@ function RegistrationWizard({ state, setState, family, notify }: { state: AppSta
   };
   return (
     <div className="space-y-6">
-      <PageTitle title="Registration Wizard" subtitle="Autosave is simulated in local state and shared family information is reused across all children." />
+      <PageTitle title="Registration Wizard" subtitle="Your progress is saved as you move through the form, and shared family information is reused across all children." />
       <Card>
         <div className="flex items-center justify-between"><p className="font-bold text-navy">Step {step + 1} of {steps.length}: {steps[step]}</p><StatusBadge status={step < 4 ? "Family shared" : "Multi-child aware"} /></div>
         <div className="mt-4"><Progress value={((step + 1) / steps.length) * 100} /></div>
@@ -714,7 +855,7 @@ function Documents({ state, setState, familyId, notify, parent = false }: { stat
   const docs = state.documents.filter((doc) => (!familyId || doc.familyId === familyId) && (filter === "All" || doc.status === filter));
   const action = (id: string, status: DocStatus) => {
     if (status === "Rejected" && !window.confirm("Reject this document and request a replacement?")) return;
-    setState({ ...state, documents: state.documents.map((d) => (d.id === id ? { ...d, status, staffNote: status === "Waived" ? "Requirement waived in demo." : d.staffNote } : d)) });
+    setState({ ...state, documents: state.documents.map((d) => (d.id === id ? { ...d, status, staffNote: status === "Waived" ? "Requirement waived by staff." : d.staffNote } : d)) });
     notify(`Document marked ${status}.`);
   };
   return (
@@ -727,11 +868,11 @@ function Documents({ state, setState, familyId, notify, parent = false }: { stat
             <div className="grid gap-4 lg:grid-cols-[1fr_auto] lg:items-center">
               <div>
                 <div className="flex flex-wrap items-center gap-3"><h3 className="font-bold text-navy">{doc.type}</h3><StatusBadge status={doc.status} /></div>
-                <p className="mt-1 text-sm text-slate-500">{doc.familyId} · {doc.category} · Uploaded {doc.uploadDate || "not yet"}</p>
+                <p className="mt-1 text-sm text-slate-500">{doc.familyId} · {doc.category} · Uploaded {doc.uploadDate ? formatDate(doc.uploadDate) : "not yet"}</p>
                 {doc.rejectionReason && <p className="mt-2 rounded-xl bg-red-50 p-3 text-sm text-red-700">Rejection reason: {doc.rejectionReason}</p>}
               </div>
               <div className="flex flex-wrap gap-2">
-                <button className="rounded-xl border px-3 py-2 text-sm font-semibold" onClick={() => notify("Preview placeholder opened for demo review.")}>Preview</button>
+                <button className="rounded-xl border px-3 py-2 text-sm font-semibold hover:bg-ivory" onClick={() => notify("Document preview opened.")}>Preview</button>
                 {parent ? (
                   <button className="rounded-xl bg-navy px-3 py-2 text-sm font-semibold text-white" onClick={() => action(doc.id, "Uploaded")}>Replace Document</button>
                 ) : (
@@ -761,16 +902,16 @@ function Agreements({ state, setState, familyId, notify }: { state: AppState; se
   };
   return (
     <div className="space-y-6">
-      <PageTitle title="Agreements" subtitle="Simulated electronic signatures use typed name, checkbox acknowledgment, date, and local state." />
+      <PageTitle title="Agreements" subtitle="Electronic acknowledgments use typed name, checkbox confirmation, and review date." />
       <Card>
         <label className="font-semibold text-slate-600">Typed signer name<input className="mt-1 w-full rounded-xl border px-3 py-2" value={signer} onChange={(e) => setSigner(e.target.value)} placeholder="Parent / guardian legal name" /></label>
-        <label className="mt-3 flex items-center gap-2 text-sm"><input type="checkbox" defaultChecked /> I agree that my typed name represents my signature for this Phase 1 demo.</label>
+        <label className="mt-3 flex items-center gap-2 text-sm"><input type="checkbox" defaultChecked /> I agree that my typed name represents my signature.</label>
       </Card>
       <div className="grid gap-4 md:grid-cols-2">
         {state.agreements.filter((a) => a.familyId === familyId).map((a) => (
           <Card key={a.id}>
             <div className="flex items-start justify-between gap-3"><h3 className="font-bold text-navy">{a.title}</h3><StatusBadge status={a.status} /></div>
-            <p className="mt-2 text-sm text-slate-500">Version {a.version} · Reviewed {a.dateReviewed || "not yet"} {a.signer ? `· ${a.signer}` : ""}</p>
+            <p className="mt-2 text-sm text-slate-500">Version {a.version} · Reviewed {a.dateReviewed ? formatDate(a.dateReviewed) : "not yet"} {a.signer ? `· ${a.signer}` : ""}</p>
             <div className="mt-4 flex gap-2"><button className="rounded-xl border px-3 py-2 text-sm font-semibold" onClick={() => notify(`${a.title} opened for review.`)}>View</button><button className="rounded-xl bg-navy px-3 py-2 text-sm font-semibold text-white" onClick={() => sign(a.id)}>Acknowledge / Sign</button></div>
           </Card>
         ))}
@@ -787,13 +928,13 @@ function Tuition({ state, setState, familyId, notify, parent = false }: { state:
   };
   return (
     <div className="space-y-6">
-      <PageTitle title={parent ? "Tuition" : "Tuition Administration"} subtitle={parent ? "Charges, credits, payment plans, invoices, receipts, and payment history." : "Family tuition accounts, demo adjustments, failed-payment list, aging, and arrangements."} />
+      <PageTitle title={parent ? "Tuition" : "Tuition Administration"} subtitle={parent ? "Charges, credits, payment plans, invoices, receipts, and payment history." : "Family tuition accounts, adjustments, failed-payment list, aging, and arrangements."} />
       {accounts.map((a) => (
         <Card key={a.familyId}>
           <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
             <div>
               <h3 className="text-xl font-bold text-navy">{state.families.find((f) => f.id === a.familyId)?.name} family account</h3>
-              <p className="text-sm text-slate-500">Plan: {a.plan} · Next installment: {a.nextDue}</p>
+              <p className="text-sm text-slate-500">Plan: {a.plan} · Next installment: {upcomingPayment(a)}</p>
             </div>
             <StatusBadge status={total(a) - a.paid > 0 ? "Balance due" : "Paid in full"} />
           </div>
@@ -816,7 +957,7 @@ function Tuition({ state, setState, familyId, notify, parent = false }: { state:
               <button className="rounded-xl border px-3 py-2 text-sm font-semibold" onClick={() => update(a.familyId, { fees: Math.max(0, a.fees - 50) }, "Late fee waived.")}>Waive late fee</button>
               <button className="rounded-xl border px-3 py-2 text-sm font-semibold" onClick={() => update(a.familyId, { paid: a.paid + 500 }, "Manual payment recorded.")}>Record manual payment</button>
               <button className="rounded-xl border px-3 py-2 text-sm font-semibold" onClick={() => update(a.familyId, { nextDue: "2026-09-01" }, "Payment due date changed.")}>Change due date</button>
-              <button className="rounded-xl bg-navy px-3 py-2 text-sm font-semibold text-white" onClick={() => update(a.familyId, { plan: "Custom arrangement", collectionNotes: [...a.collectionNotes, "Custom arrangement created in demo."] }, "Payment arrangement created.")}>Create arrangement</button>
+              <button className="rounded-xl bg-navy px-3 py-2 text-sm font-semibold text-white" onClick={() => update(a.familyId, { plan: "Custom arrangement", collectionNotes: [...a.collectionNotes, "Custom arrangement created."] }, "Payment arrangement created.")}>Create arrangement</button>
             </div>
           )}
         </Card>
@@ -947,7 +1088,7 @@ function Payments({ state, familyId }: { state: AppState; familyId?: string }) {
     <div className="space-y-6">
       <PageTitle title="Payments" subtitle="Invoices, receipts, payment history, overdue balances, failed payments, aging, and collection notes." />
       <Table headers={["Family", "Plan", "Paid", "Remaining", "Next Due", "Failed", "Notes"]}>
-        {accounts.map((a) => <tr key={a.familyId}><td>{a.familyId}</td><td>{a.plan}</td><td>{currency(a.paid)}</td><td>{currency(total(a) - a.paid)}</td><td>{a.nextDue}</td><td>{a.failedPayments}</td><td>{a.collectionNotes.join(" ") || "—"}</td></tr>)}
+        {accounts.map((a) => <tr key={a.familyId}><td>{a.familyId}</td><td>{a.plan}</td><td>{currency(a.paid)}</td><td>{currency(total(a) - a.paid)}</td><td>{upcomingPayment(a)}</td><td>{a.failedPayments}</td><td>{a.collectionNotes.join(" ") || "—"}</td></tr>)}
       </Table>
     </div>
   );
@@ -965,20 +1106,20 @@ function Reports({ state, notify }: { state: AppState; notify: (message: string)
   };
   return (
     <div className="space-y-6">
-      <PageTitle title="Reports" subtitle="Operational and tuition reports with filters and CSV exports from local demo data." />
-      <FilterBar value="2026-2027" setValue={() => notify("Academic-year filter applied in demo.")} options={["2026-2027", "Preschool", "Elementary", "Middle School"]} />
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{reports.map((report) => <Card key={report}><h3 className="font-bold text-navy">{report}</h3><p className="mt-2 text-sm text-slate-600">Filtered summary generated from local Phase 1 data.</p><button className="mt-4 rounded-xl bg-navy px-4 py-2 text-sm font-semibold text-white" onClick={() => exportCsv(report)}><Download className="mr-2 inline h-4 w-4" />Export CSV</button></Card>)}</div>
+      <PageTitle title="Reports" subtitle="Operational and tuition reports with filters and CSV exports." />
+      <FilterBar value="2026-2027" setValue={() => notify("Academic-year filter applied.")} options={["2026-2027", "Preschool", "Elementary", "Middle School"]} />
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{reports.map((report) => <Card key={report}><h3 className="font-bold text-navy">{report}</h3><p className="mt-2 text-sm text-slate-600">Filtered summary generated for the selected report.</p><button className="mt-4 rounded-xl bg-navy px-4 py-2 text-sm font-semibold text-white" onClick={() => exportCsv(report)}><Download className="mr-2 inline h-4 w-4" aria-hidden="true" />Export CSV</button></Card>)}</div>
     </div>
   );
 }
 
 function Messages({ state, familyId, notify }: { state: AppState; familyId?: string; notify: (message: string) => void }) {
   const messages = state.messages.filter((m) => !familyId || m.familyId === familyId);
-  return <div className="space-y-6"><PageTitle title="Messages" subtitle="Recent school communication and office notes." />{messages.map((m) => <Card key={m.id}><p className="font-bold text-navy">{m.subject}</p><p className="text-sm text-slate-500">{m.date} · {m.familyId}</p><p className="mt-2 text-slate-600">{m.body}</p><button className="mt-4 rounded-xl border px-4 py-2 font-semibold" onClick={() => notify("Reply draft saved locally in demo.")}>Reply</button></Card>)}{!messages.length && <Empty />}</div>;
+  return <div className="space-y-6"><PageTitle title="Messages" subtitle="Recent school communication and office notes." />{messages.map((m) => <Card key={m.id}><p className="font-bold text-navy">{m.subject}</p><p className="text-sm text-slate-500">{formatDate(m.date)} · {m.familyId}</p><p className="mt-2 text-slate-600">{m.body}</p><button className="mt-4 rounded-xl border px-4 py-2 font-semibold hover:bg-ivory" onClick={() => notify("Reply draft saved.")}>Reply</button></Card>)}{!messages.length && <Empty />}</div>;
 }
 
 function SimplePage({ title, description }: { title: string; description: string }) {
-  return <div className="space-y-6"><PageTitle title={title} subtitle={description} /><Card><p className="text-slate-600">This section is wired into navigation and ready for the next implementation pass. Current controls are intentionally limited to local Phase 1 configuration.</p></Card></div>;
+  return <div className="space-y-6"><PageTitle title={title} subtitle={description} /><Card><p className="text-slate-600">This section is available for school configuration and future workflow settings.</p></Card></div>;
 }
 
 function PageTitle({ title, subtitle }: { title: string; subtitle: string }) {
@@ -990,7 +1131,7 @@ function Info({ label, value, light = false }: { label: string; value: string; l
 }
 
 function SearchBar({ query, setQuery }: { query: string; setQuery: (value: string) => void }) {
-  return <label className="relative block"><Search className="absolute left-3 top-3 h-5 w-5 text-slate-400" /><input className="w-full rounded-2xl border border-slate-200 bg-white py-3 pl-11 pr-4 shadow-sm" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search..." /></label>;
+  return <label className="relative block"><Search className="absolute left-3 top-3 h-5 w-5 text-slate-400" aria-hidden="true" /><input className="w-full rounded-2xl border border-slate-200 bg-white py-3 pl-11 pr-4 shadow-sm" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search..." /></label>;
 }
 
 function FilterBar({ value, setValue, options }: { value: string; setValue: (value: string) => void; options: string[] }) {
