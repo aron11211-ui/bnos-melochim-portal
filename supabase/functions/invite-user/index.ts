@@ -71,26 +71,30 @@ Deno.serve(async (request) => {
     }
 
     const existingAuthUser = await findAuthUserByEmail(admin, body.email);
-    if (existingAuthUser) {
+    if (existingAuthUser?.email_confirmed_at) {
       return json(request, { error: "That email is already registered. Ask a Super Admin to review the account." }, 409);
     }
 
-    const { data: invited, error: inviteError } = await admin.auth.admin.inviteUserByEmail(body.email, {
-      redirectTo: productionInviteRedirect,
-      data: {
-        first_name: body.first_name,
-        last_name: body.last_name,
-        phone: body.phone ?? "",
-        role: body.role,
-      },
-    });
+    let invitedUser = existingAuthUser ?? null;
+    if (!invitedUser) {
+      const { data: invited, error: inviteError } = await admin.auth.admin.inviteUserByEmail(body.email, {
+        redirectTo: productionInviteRedirect,
+        data: {
+          first_name: body.first_name,
+          last_name: body.last_name,
+          phone: body.phone ?? "",
+          role: body.role,
+        },
+      });
 
-    if (inviteError || !invited.user) {
-      return json(request, { error: "The invitation could not be sent. Check the email address and try again." }, 400);
+      if (inviteError || !invited.user) {
+        return json(request, { error: "The invitation could not be sent. Check the email address and try again." }, 400);
+      }
+      invitedUser = invited.user;
     }
 
     const profilePayload = {
-      id: invited.user.id,
+      id: invitedUser.id,
       email: body.email,
       first_name: body.first_name,
       last_name: body.last_name,
@@ -101,8 +105,8 @@ Deno.serve(async (request) => {
 
     const { error: profileError } = await admin.from("profiles").upsert(profilePayload, { onConflict: "id" });
     if (profileError) {
-      await safeDeleteAuthUser(admin, invited.user.id);
-      await recordAudit(admin, callerData.user.id, "invite_user_profile_failed", invited.user.id, {
+      if (!existingAuthUser) await safeDeleteAuthUser(admin, invitedUser.id);
+      await recordAudit(admin, callerData.user.id, "invite_user_profile_failed", invitedUser.id, {
         email: body.email,
         role: body.role,
       });
@@ -113,7 +117,7 @@ Deno.serve(async (request) => {
       const { error: familyUserError } = await admin.from("family_users").upsert(
         {
           family_id: body.family_id,
-          user_id: invited.user.id,
+          user_id: invitedUser.id,
           relationship: "Guardian",
           is_primary_contact: false,
           status: "invited",
@@ -124,8 +128,8 @@ Deno.serve(async (request) => {
       );
 
       if (familyUserError) {
-        await admin.from("profiles").update({ status: "pending_verification" }).eq("id", invited.user.id);
-        await recordAudit(admin, callerData.user.id, "invite_user_family_link_failed", invited.user.id, {
+        await admin.from("profiles").update({ status: "pending_verification" }).eq("id", invitedUser.id);
+        await recordAudit(admin, callerData.user.id, "invite_user_family_link_failed", invitedUser.id, {
           email: body.email,
           family_id: body.family_id,
         });
@@ -133,7 +137,7 @@ Deno.serve(async (request) => {
       }
     }
 
-    await recordAudit(admin, callerData.user.id, "invite_user", invited.user.id, {
+    await recordAudit(admin, callerData.user.id, "invite_user", invitedUser.id, {
       email: body.email,
       role: body.role,
       family_id: body.family_id ?? null,
@@ -143,7 +147,7 @@ Deno.serve(async (request) => {
       ok: true,
       email: body.email,
       role: body.role,
-      user_id: invited.user.id,
+      user_id: invitedUser.id,
       family_name: familyName,
       message: familyName ? `Invitation sent to ${body.email} for ${familyName}.` : `Invitation sent to ${body.email}.`,
     });

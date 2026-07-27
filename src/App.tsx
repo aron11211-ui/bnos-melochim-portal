@@ -1715,7 +1715,23 @@ function UsersAccess({ currentRole, notify }: { currentRole: Role; notify: (mess
     setInviting(false);
 
     if (error) {
-      const message = typeof data?.error === "string" ? data.error : error.message || "Invitation failed. Please try again.";
+      const context = error.context as { json?: () => Promise<unknown>; text?: () => Promise<string> } | undefined;
+      let safeFunctionError = "";
+      try {
+        const json = await context?.json?.();
+        if (json && typeof json === "object" && "error" in json && typeof json.error === "string") safeFunctionError = json.error;
+      } catch {
+        try {
+          const text = await context?.text?.();
+          if (text) {
+            const parsed = JSON.parse(text) as { error?: unknown };
+            if (typeof parsed.error === "string") safeFunctionError = parsed.error;
+          }
+        } catch {
+          // Keep the generic fallback below.
+        }
+      }
+      const message = typeof data?.error === "string" ? data.error : safeFunctionError || error.message || "Invitation failed. Please try again.";
       return setInviteError(message);
     }
 
