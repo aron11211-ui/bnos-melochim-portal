@@ -103,7 +103,7 @@ Deno.serve(async (request) => {
     });
 
     if (inviteError || !invited.user) {
-      return json(request, { error: "The invitation could not be sent. If you requested many emails, wait a few minutes and try again." }, 400);
+      return json(request, { error: safeInviteError(inviteError?.message) }, 400);
     }
     const invitedUser = invited.user;
 
@@ -222,6 +222,14 @@ async function safeDeleteAuthUser(admin: ReturnType<typeof createClient>, userId
   } catch {
     // Do not expose cleanup internals to the caller.
   }
+}
+
+function safeInviteError(message = "") {
+  const normalized = message.toLowerCase();
+  if (normalized.includes("rate limit")) return "Supabase email rate limit was reached. Wait 10–30 minutes, then send one fresh invitation.";
+  if (normalized.includes("already")) return "That email is already registered or recently invited. Try a different email or wait before retrying.";
+  if (normalized.includes("smtp")) return "Supabase could not send email because SMTP/email settings need attention.";
+  return "The invitation could not be sent. Wait a few minutes, then try one fresh invitation.";
 }
 
 async function recordAudit(admin: ReturnType<typeof createClient>, actorId: string, action: string, recordId: string, details: Record<string, unknown>) {
