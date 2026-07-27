@@ -8,7 +8,7 @@ Use this matrix for live deployed testing. Do not mark a role complete until it 
 | Registration Office | Not fully retested | Not fully retested | Not fully retested | Family/student creation expected | Not fully retested | Not fully retested | In progress |
 | Tuition Office | Not fully retested | Not fully retested | Not fully retested | Tuition workflow incomplete | Not fully retested | Not fully retested | In progress |
 | School Management | Not fully retested | Not fully retested | Not fully retested | Should be read-only | Not fully retested | Not fully retested | In progress |
-| System Administration | Partially tested earlier | Partially tested earlier | Partially tested earlier | Invite and access management started | Not fully retested | Not fully retested | In progress |
+| System Administration | Partially tested earlier | Dashboard live-loaded July 27, 2026 | Users & Access live-opened July 27, 2026 | Invite and access management started; Manage User Access panel opened live without console errors | Not fully retested | Not fully retested | In progress |
 
 ## Required browser checks per role
 
