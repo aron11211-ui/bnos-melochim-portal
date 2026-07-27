@@ -66,32 +66,46 @@ Deno.serve(async (request) => {
     }
 
     const existingProfile = await findExistingProfile(admin, body.email);
-    if (existingProfile) {
-      return json(request, { error: "That email already has a portal account." }, 409);
+    if (existingProfile?.status === "active") {
+      return json(request, { error: "That email already has an active portal account." }, 409);
+    }
+    if (existingProfile?.status === "disabled") {
+      return json(request, { error: "That account is disabled. A Super Admin must reactivate it before it can be used." }, 409);
+    }
+    if (existingProfile?.id) {
+      await safeDeleteAuthUser(admin, existingProfile.id);
+      await admin.from("profiles").delete().eq("id", existingProfile.id);
+      await recordAudit(admin, callerData.user.id, "retry_invite_cleanup", existingProfile.id, {
+        email: body.email,
+        prior_status: existingProfile.status,
+      });
     }
 
     const existingAuthUser = await findAuthUserByEmail(admin, body.email);
     if (existingAuthUser?.email_confirmed_at) {
       return json(request, { error: "That email is already registered. Ask a Super Admin to review the account." }, 409);
     }
-
-    let invitedUser = existingAuthUser ?? null;
-    if (!invitedUser) {
-      const { data: invited, error: inviteError } = await admin.auth.admin.inviteUserByEmail(body.email, {
-        redirectTo: productionInviteRedirect,
-        data: {
-          first_name: body.first_name,
-          last_name: body.last_name,
-          phone: body.phone ?? "",
-          role: body.role,
-        },
+    if (existingAuthUser?.id) {
+      await safeDeleteAuthUser(admin, existingAuthUser.id);
+      await recordAudit(admin, callerData.user.id, "retry_invite_auth_cleanup", existingAuthUser.id, {
+        email: body.email,
       });
-
-      if (inviteError || !invited.user) {
-        return json(request, { error: "The invitation could not be sent. Check the email address and try again." }, 400);
-      }
-      invitedUser = invited.user;
     }
+
+    const { data: invited, error: inviteError } = await admin.auth.admin.inviteUserByEmail(body.email, {
+      redirectTo: productionInviteRedirect,
+      data: {
+        first_name: body.first_name,
+        last_name: body.last_name,
+        phone: body.phone ?? "",
+        role: body.role,
+      },
+    });
+
+    if (inviteError || !invited.user) {
+      return json(request, { error: "The invitation could not be sent. If you requested many emails, wait a few minutes and try again." }, 400);
+    }
+    const invitedUser = invited.user;
 
     const profilePayload = {
       id: invitedUser.id,
@@ -105,7 +119,7 @@ Deno.serve(async (request) => {
 
     const { error: profileError } = await admin.from("profiles").upsert(profilePayload, { onConflict: "id" });
     if (profileError) {
-      if (!existingAuthUser) await safeDeleteAuthUser(admin, invitedUser.id);
+      await safeDeleteAuthUser(admin, invitedUser.id);
       await recordAudit(admin, callerData.user.id, "invite_user_profile_failed", invitedUser.id, {
         email: body.email,
         role: body.role,
@@ -187,7 +201,7 @@ function canInvite(callerRole: AppRole, inviteRole: AppRole) {
 }
 
 async function findExistingProfile(admin: ReturnType<typeof createClient>, email: string) {
-  const { data } = await admin.from("profiles").select("id").eq("email", email).maybeSingle();
+  const { data } = await admin.from("profiles").select("id,status,role").eq("email", email).maybeSingle();
   return data;
 }
 
