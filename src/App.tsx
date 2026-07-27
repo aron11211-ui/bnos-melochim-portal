@@ -1,11 +1,13 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
+import type { Session, SupabaseClient } from "@supabase/supabase-js";
 import {
   BrowserRouter,
   Link,
   Navigate,
   Route,
   Routes,
+  useLocation,
   useNavigate,
   useParams,
 } from "react-router-dom";
@@ -19,6 +21,8 @@ import {
   ChevronLeft,
   ClipboardCheck,
   Download,
+  Eye,
+  EyeOff,
   FileCheck2,
   LayoutDashboard,
   LogOut,
@@ -31,9 +35,11 @@ import {
   X,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
+import { isSupabaseConfigured, supabase } from "./lib/supabase";
+import type { AppRole, Profile } from "./lib/supabase";
 import "./App.css";
 
-type Role = "Parent" | "School Office" | "Tuition Administrator" | "School Management";
+type Role = AppRole;
 type DocStatus =
   | "Not Started"
   | "Missing"
@@ -150,20 +156,20 @@ type AppState = {
 
 type NavItem = { label: string; path: string; icon: LucideIcon };
 
-const roles: Role[] = ["Parent", "School Office", "Tuition Administrator", "School Management"];
-
 const roleLabels: Record<Role, string> = {
-  Parent: "Parent Portal",
-  "School Office": "Registration Office",
-  "Tuition Administrator": "Tuition Office",
-  "School Management": "School Management",
+  parent: "Parent Portal",
+  registration_office: "Registration Office",
+  tuition_office: "Tuition Office",
+  school_management: "School Management",
+  super_admin: "Super Admin",
 };
 
 const roleDescriptions: Record<Role, string> = {
-  Parent: "Family registration, documents, tuition, and messages",
-  "School Office": "Applications, student records, documents, and agreements",
-  "Tuition Administrator": "Tuition accounts, invoices, payments, and notes",
-  "School Management": "Dashboards, reports, and school-wide oversight",
+  parent: "Family registration, documents, tuition, and messages",
+  registration_office: "Applications, student records, documents, and agreements",
+  tuition_office: "Tuition accounts, invoices, payments, and notes",
+  school_management: "Read-only dashboards, reports, and school-wide oversight",
+  super_admin: "Full system administration, users, roles, and settings",
 };
 
 const docTypes = [
@@ -361,10 +367,190 @@ function upcomingPayment(account: TuitionAccount) {
   return `${currency(Math.ceil(remaining / divisor))} due ${formatDate(account.nextDue)}`;
 }
 
+async function loadPortalData(client: SupabaseClient): Promise<AppState> {
+  const [{ data: families }, { data: students }, { data: documents }, { data: agreements }, { data: signatures }, { data: tuitionAccounts }, { data: notifications }] = await Promise.all([
+    client.from("families").select("*").order("family_code"),
+    client.from("students").select("*").order("legal_name"),
+    client.from("student_documents").select("*"),
+    client.from("agreements").select("*").eq("active", true),
+    client.from("agreement_signatures").select("*"),
+    client.from("tuition_accounts").select("*"),
+    client.from("notifications").select("*").order("created_at", { ascending: false }),
+  ]);
+
+  const familyCodeById = new Map((families ?? []).map((family: any) => [family.id, family.family_code ?? family.id]));
+  const familyCode = (familyId: string) => familyCodeById.get(familyId) ?? familyId;
+  const appFamilies: Family[] = (families ?? []).map((family: any) => ({
+    id: family.family_code ?? family.id,
+    name: family.family_name ?? "Family",
+    address: family.address_line1 ?? "",
+    city: family.city ?? "",
+    state: family.state ?? "",
+    zip: family.postal_code ?? "",
+    phone: family.primary_phone ?? "",
+    email: family.primary_email ?? "",
+    shul: family.shul ?? "",
+    emergencyContacts: Array.isArray(family.emergency_contacts) ? family.emergency_contacts : [],
+    maternalGrandparents: family.maternal_grandparents ?? "",
+    paternalGrandparents: family.paternal_grandparents ?? "",
+    parents: Array.isArray(family.guardians) ? family.guardians : [],
+    status: toRegistrationStatus(family.registration_status),
+    registrationPercent: family.registration_percent ?? 0,
+  }));
+
+  return {
+    families: appFamilies,
+    students: (students ?? []).map((student: any) => ({
+      id: student.id,
+      familyId: familyCode(student.family_id),
+      preferredName: student.preferred_name ?? student.legal_name ?? "Student",
+      legalName: student.legal_name ?? student.preferred_name ?? "Student",
+      dob: student.date_of_birth ?? "",
+      grade: student.grade ?? "",
+      gender: student.gender ?? "",
+      program: student.program ?? "",
+      newReturning: student.new_returning === "Returning" ? "Returning" : "New",
+      registrationStatus: toRegistrationStatus(student.registration_status),
+      documentStatus: toDocStatus(student.document_status),
+      tuitionStatus: toTuitionStatus(student.tuition_status),
+      medicalAlerts: student.medical_alerts ?? "None",
+      transportation: student.transportation ?? "",
+      progress: student.progress ?? 0,
+    })),
+    documents: (documents ?? []).map((doc: any) => ({
+      id: doc.id,
+      familyId: familyCode(doc.family_id ?? ""),
+      studentId: doc.student_id ?? undefined,
+      type: doc.name ?? doc.document_type ?? "Document",
+      category: doc.category ?? "Registration",
+      status: toDocStatus(doc.status),
+      uploadDate: doc.uploaded_at ?? undefined,
+      rejectionReason: doc.rejection_reason ?? undefined,
+      staffNote: doc.staff_note ?? undefined,
+    })),
+    agreements: (agreements ?? []).map((agreement: any) => {
+      const signature = (signatures ?? []).find((item: any) => item.agreement_id === agreement.id);
+      return {
+        id: agreement.id,
+        familyId: signature ? familyCode(signature.family_id) : appFamilies[0]?.id ?? "",
+        title: agreement.title ?? "Agreement",
+        status: signature ? "Signed" : "Awaiting Signature",
+        version: agreement.version ?? "1.0",
+        dateReviewed: signature?.signed_at,
+        signer: signature?.signer_name,
+      };
+    }),
+    tuition: (tuitionAccounts ?? []).map((account: any) => ({
+      familyId: familyCode(account.family_id),
+      annualTuition: account.annual_tuition ?? 0,
+      fees: account.fees ?? 0,
+      transportation: account.transportation ?? 0,
+      registration: account.registration_fee ?? 0,
+      discounts: account.discounts ?? 0,
+      scholarships: account.scholarships ?? 0,
+      credits: account.credits ?? 0,
+      paid: account.paid ?? 0,
+      plan: account.plan_name ?? "Custom arrangement",
+      nextDue: account.next_due_on ?? "",
+      failedPayments: account.failed_payments ?? 0,
+      collectionNotes: Array.isArray(account.collection_notes) ? account.collection_notes : [],
+    })),
+    messages: (notifications ?? []).map((note: any) => ({
+      id: note.id,
+      familyId: familyCode(note.family_id ?? ""),
+      subject: note.title ?? "Notification",
+      body: note.body ?? "",
+      date: note.created_at ?? "",
+    })),
+  };
+}
+
+function toRegistrationStatus(status: string): RegistrationStatus {
+  const normalized = (status ?? "").toLowerCase().replaceAll("_", " ");
+  if (normalized.includes("submitted")) return "Submitted";
+  if (normalized.includes("incomplete")) return "Incomplete";
+  if (normalized.includes("review")) return "Under Review";
+  if (normalized.includes("interview")) return "Interview Required";
+  if (normalized.includes("accepted")) return "Accepted";
+  if (normalized.includes("wait")) return "Waitlisted";
+  if (normalized.includes("declined")) return "Declined";
+  if (normalized.includes("contract")) return "Contract Pending";
+  if (normalized.includes("deposit")) return "Deposit Pending";
+  if (normalized.includes("enrolled")) return "Fully Enrolled";
+  if (normalized.includes("not")) return "Not Started";
+  return "In Progress";
+}
+
+function toDocStatus(status: string): DocStatus {
+  const normalized = (status ?? "").toLowerCase();
+  if (normalized.includes("approved")) return "Approved";
+  if (normalized.includes("reject")) return "Rejected";
+  if (normalized.includes("review")) return "Under Review";
+  if (normalized.includes("upload")) return "Uploaded";
+  if (normalized.includes("expire")) return "Expired";
+  if (normalized.includes("waive")) return "Waived";
+  if (normalized.includes("missing")) return "Missing";
+  return "Not Started";
+}
+
+function toTuitionStatus(status: string): Student["tuitionStatus"] {
+  const normalized = (status ?? "").toLowerCase();
+  if (normalized.includes("over")) return "Overdue";
+  if (normalized.includes("arrangement")) return "Arrangement";
+  if (normalized.includes("credit")) return "Credit";
+  return "Current";
+}
+
 function App() {
-  const [role, setRole] = useState<Role | null>(null);
+  const [session, setSession] = useState<Session | null>(null);
+  const [profile, setProfile] = useState<Profile | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [authMessage, setAuthMessage] = useState<string | null>(null);
   const [state, setState] = useState<AppState>(demoState);
   const [toast, setToast] = useState<string | null>(null);
+
+  useEffect(() => {
+    const client = supabase;
+    if (!isSupabaseConfigured || !client) {
+      setAuthLoading(false);
+      return;
+    }
+
+    const loadProfile = async (activeSession: Session | null) => {
+      setSession(activeSession);
+      if (!activeSession?.user) {
+        setProfile(null);
+        setAuthLoading(false);
+        return;
+      }
+
+      const { data, error } = await client
+        .from("profiles")
+        .select("id,email,first_name,last_name,role,status,disabled_at")
+        .eq("id", activeSession.user.id)
+        .maybeSingle();
+
+      if (error || !data) {
+        setProfile(null);
+        setAuthMessage("Your login was accepted, but your portal profile is not active yet. Please contact the school office.");
+      } else if (data.status !== "active") {
+        await client.auth.signOut();
+        setProfile(null);
+        setAuthMessage(data.status === "disabled" ? "This account is disabled. Please contact the school office." : "This account is not active yet. Please verify your email or contact the school office.");
+      } else {
+        setProfile(data as Profile);
+        setState(await loadPortalData(client));
+        setAuthMessage(null);
+      }
+      setAuthLoading(false);
+    };
+
+    client.auth.getSession().then(({ data }) => loadProfile(data.session));
+    const { data: listener } = client.auth.onAuthStateChange((_event, nextSession) => {
+      void loadProfile(nextSession);
+    });
+    return () => listener.subscription.unsubscribe();
+  }, []);
 
   const notify = (message: string) => {
     setToast(message);
@@ -375,17 +561,16 @@ function App() {
     <BrowserRouter>
       {toast && <div className="fixed right-4 top-4 z-50 rounded-xl bg-navy px-4 py-3 text-sm font-semibold text-white shadow-2xl">{toast}</div>}
       <Routes>
-        <Route path="/" element={<Login setRole={setRole} />} />
+        <Route path="/login" element={<Login session={session} profile={profile} authMessage={authMessage} />} />
+        <Route path="/reset-password" element={<ResetPassword />} />
+        <Route path="/accept-invitation" element={<ResetPassword invitation />} />
+        <Route path="/" element={<Navigate to={profile ? defaultRouteForRole(profile.role) : "/login"} replace />} />
         <Route
           path="/*"
           element={
-            role ? (
-              <Shell role={role} setRole={setRole}>
-                <Portal state={state} setState={setState} role={role} notify={notify} />
-              </Shell>
-            ) : (
-              <Navigate to="/" replace />
-            )
+            authLoading ? <LoadingScreen /> : profile ? (
+              <ProtectedPortal profile={profile} state={state} setState={setState} notify={notify} />
+            ) : <Navigate to="/login" replace />
           }
         />
       </Routes>
@@ -393,12 +578,48 @@ function App() {
   );
 }
 
-function Login({ setRole }: { setRole: (role: Role) => void }) {
+function Login({ session, profile, authMessage }: { session: Session | null; profile: Profile | null; authMessage: string | null }) {
   const navigate = useNavigate();
-  const enter = (role: Role) => {
-    setRole(role);
-    navigate(role === "Parent" ? "/parent/dashboard" : "/admin/dashboard");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [remember, setRemember] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<string | null>(authMessage);
+
+  useEffect(() => setMessage(authMessage), [authMessage]);
+  useEffect(() => {
+    if (session && profile) navigate(defaultRouteForRole(profile.role), { replace: true });
+  }, [navigate, profile, session]);
+
+  const signIn = async (event: FormEvent) => {
+    event.preventDefault();
+    setMessage(null);
+    if (!isSupabaseConfigured || !supabase) {
+      setMessage("Supabase is not configured yet. Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY, then redeploy.");
+      return;
+    }
+    setBusy(true);
+    const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
+    setBusy(false);
+    if (error) setMessage("Invalid email or password. If you need help, contact the school office.");
   };
+
+  const sendReset = async () => {
+    if (!email.trim()) {
+      setMessage("Enter your email first, then choose Forgot password.");
+      return;
+    }
+    if (!isSupabaseConfigured || !supabase) {
+      setMessage("Password reset will work after Supabase is configured.");
+      return;
+    }
+    const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
+      redirectTo: `${window.location.origin}/reset-password`,
+    });
+    setMessage(error ? "We could not send a reset email. Please contact the school office." : "If that email has an account, a password reset link was sent.");
+  };
+
   return (
     <main className="min-h-screen bg-[radial-gradient(circle_at_top_left,#f7efd9,transparent_35%),radial-gradient(circle_at_85%_20%,rgba(123,0,36,.35),transparent_28%),linear-gradient(135deg,#0f2746,#173b63)] px-6 py-10 text-white">
       <div className="mx-auto grid max-w-6xl gap-10 lg:grid-cols-[1.15fr_.85fr] lg:items-center">
@@ -430,19 +651,51 @@ function Login({ setRole }: { setRole: (role: Role) => void }) {
               <p className="font-bold text-burgundy">בנות מלכים</p>
             </div>
           </div>
-          <h2 className="mt-2 text-2xl font-bold text-navy">Choose a portal role</h2>
+          <h2 className="mt-2 text-2xl font-bold text-navy">Sign in to your account</h2>
+          <p className="mt-2 text-sm text-slate-600">Your access is assigned by the school office. Staff accounts are invitation-only.</p>
+          {message && <div className="mt-4 rounded-2xl border border-gold/40 bg-ivory p-3 text-sm font-semibold text-navy">{message}</div>}
+          <form onSubmit={signIn} className="mt-6 grid gap-4">
+            <label className="text-sm font-semibold text-slate-700">
+              Email address
+              <input className="mt-1 w-full rounded-xl border border-slate-200 px-4 py-3 outline-none transition focus:border-gold focus:ring-2 focus:ring-gold/30" type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} required />
+            </label>
+            <label className="text-sm font-semibold text-slate-700">
+              Password
+              <span className="mt-1 flex rounded-xl border border-slate-200 focus-within:border-gold focus-within:ring-2 focus-within:ring-gold/30">
+                <input className="min-w-0 flex-1 rounded-l-xl px-4 py-3 outline-none" type={showPassword ? "text" : "password"} autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required minLength={8} />
+                <button type="button" className="rounded-r-xl px-3 text-slate-500 hover:bg-ivory focus-visible:bg-ivory" onClick={() => setShowPassword((value) => !value)} aria-label={showPassword ? "Hide password" : "Show password"}>
+                  {showPassword ? <EyeOff className="h-5 w-5" aria-hidden="true" /> : <Eye className="h-5 w-5" aria-hidden="true" />}
+                </button>
+              </span>
+            </label>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <label className="flex items-center gap-2 text-sm font-semibold text-slate-600">
+                <input type="checkbox" checked={remember} onChange={(event) => setRemember(event.target.checked)} className="h-4 w-4 rounded border-slate-300 text-burgundy" />
+                Remember me
+              </label>
+              <button type="button" onClick={sendReset} className="text-sm font-bold text-burgundy hover:text-burgundy-dark focus-visible:underline">Forgot password?</button>
+            </div>
+            <button disabled={busy || !remember} className="rounded-xl bg-burgundy px-5 py-3 font-bold text-white shadow-lg shadow-burgundy/20 transition hover:bg-burgundy-dark focus-visible:ring-2 focus-visible:ring-gold disabled:cursor-not-allowed disabled:opacity-60">
+              {busy ? "Signing in..." : "Sign In"}
+            </button>
+            {!remember && <p className="text-xs text-slate-500">Session persistence is required for this secure family portal.</p>}
+          </form>
+          <div className="mt-6 rounded-2xl border border-slate-200 bg-ivory p-4 text-sm text-slate-700">
+            Need an account or locked out? Contact the school office. There is no public self-registration for staff.
+          </div>
           <div className="mt-6 grid gap-3">
-            {roles.map((role) => (
+            {(["parent", "registration_office", "tuition_office", "school_management"] as Role[]).map((role) => (
               <button
                 key={role}
-                onClick={() => enter(role)}
-                className="group rounded-2xl border border-slate-200 bg-ivory px-5 py-4 text-left font-semibold text-navy shadow-sm transition hover:-translate-y-0.5 hover:border-gold hover:bg-white hover:shadow-lg hover:shadow-burgundy/10 focus-visible:bg-white"
-                aria-label={`Open ${roleLabels[role]}`}
+                type="button"
+                disabled
+                className="rounded-2xl border border-slate-200 bg-slate-50 px-5 py-4 text-left font-semibold text-navy opacity-80"
+                aria-label={`${roleLabels[role]} access is assigned after login`}
               >
                 <span className="flex items-center justify-between gap-4">
                   <span>{roleLabels[role]}</span>
-                  <span className="inline-flex items-center gap-1 rounded-full bg-burgundy px-3 py-1 text-xs font-bold text-white group-hover:bg-burgundy-dark">
-                    Open Portal <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
+                  <span className="inline-flex items-center gap-1 rounded-full bg-white px-3 py-1 text-xs font-bold text-slate-500">
+                    Assigned by office <ShieldCheck className="h-3.5 w-3.5" aria-hidden="true" />
                   </span>
                 </span>
                 <span className="mt-1 block text-sm font-normal text-slate-600">{roleDescriptions[role]}</span>
@@ -455,10 +708,63 @@ function Login({ setRole }: { setRole: (role: Role) => void }) {
   );
 }
 
-function Shell({ role, setRole, children }: { role: Role; setRole: (role: null) => void; children: ReactNode }) {
-  const [open, setOpen] = useState(false);
-  const nav = role === "Parent" ? parentNav : adminNav(role);
+function ResetPassword({ invitation = false }: { invitation?: boolean }) {
   const navigate = useNavigate();
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [message, setMessage] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const updatePassword = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!supabase) return setMessage("Supabase is not configured yet.");
+    if (password.length < 8) return setMessage("Use at least 8 characters.");
+    if (password !== confirm) return setMessage("Passwords do not match.");
+    setBusy(true);
+    const { error } = await supabase.auth.updateUser({ password });
+    setBusy(false);
+    if (error) setMessage("This reset link is no longer valid. Please request a new one.");
+    else {
+      setMessage("Password updated. You can now sign in.");
+      window.setTimeout(() => navigate("/login", { replace: true }), 1200);
+    }
+  };
+
+  return (
+    <main className="grid min-h-screen place-items-center bg-ivory px-6">
+      <form onSubmit={updatePassword} className="w-full max-w-md rounded-3xl border border-slate-200 bg-white p-6 shadow-xl">
+        <img src="/bnos-melochim-logo.jpeg" alt="Bnos Melochim logo" className="mb-4 h-16 w-16 rounded-2xl border border-gold/30 object-contain p-1" />
+        <h1 className="text-2xl font-bold text-navy">{invitation ? "Accept invitation" : "Change password"}</h1>
+        <p className="mt-2 text-sm text-slate-600">{invitation ? "Choose a password to finish setting up your Bnos Melochim portal account." : "Choose a new password for your Bnos Melochim portal account."}</p>
+        {message && <p className="mt-4 rounded-xl bg-ivory p-3 text-sm font-semibold text-navy">{message}</p>}
+        <label className="mt-5 block text-sm font-semibold text-slate-700">New password<input className="mt-1 w-full rounded-xl border px-4 py-3" type="password" value={password} onChange={(event) => setPassword(event.target.value)} minLength={8} required /></label>
+        <label className="mt-4 block text-sm font-semibold text-slate-700">Confirm password<input className="mt-1 w-full rounded-xl border px-4 py-3" type="password" value={confirm} onChange={(event) => setConfirm(event.target.value)} minLength={8} required /></label>
+        <button disabled={busy} className="mt-5 w-full rounded-xl bg-burgundy px-5 py-3 font-bold text-white hover:bg-burgundy-dark disabled:opacity-60">{busy ? "Updating..." : "Update password"}</button>
+      </form>
+    </main>
+  );
+}
+
+function LoadingScreen() {
+  return <main className="grid min-h-screen place-items-center bg-ivory text-lg font-bold text-navy">Loading secure portal...</main>;
+}
+
+function ProtectedPortal({ profile, state, setState, notify }: { profile: Profile; state: AppState; setState: React.Dispatch<React.SetStateAction<AppState>>; notify: (message: string) => void }) {
+  const location = useLocation();
+  if (!isAuthorizedPath(profile.role, location.pathname)) return <Navigate to={defaultRouteForRole(profile.role)} replace />;
+  return (
+    <Shell profile={profile}>
+      <Portal state={state} setState={setState} role={profile.role} notify={notify} />
+    </Shell>
+  );
+}
+
+function Shell({ profile, children }: { profile: Profile; children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  const role = profile.role;
+  const nav = role === "parent" ? parentNav : adminNav(role);
+  const navigate = useNavigate();
+  const userName = [profile.first_name, profile.last_name].filter(Boolean).join(" ") || profile.email;
   return (
     <div className="min-h-screen bg-ivory text-slate-900">
       <button className="fixed left-4 top-4 z-40 rounded-xl bg-navy p-3 text-white shadow-lg lg:hidden" onClick={() => setOpen(true)} aria-label="Open navigation">
@@ -466,7 +772,7 @@ function Shell({ role, setRole, children }: { role: Role; setRole: (role: null) 
       </button>
       <aside className={`fixed inset-y-0 left-0 z-50 w-72 border-r border-slate-200 bg-white p-5 shadow-xl transition lg:translate-x-0 ${open ? "translate-x-0" : "-translate-x-full"}`}>
         <div className="flex items-start justify-between">
-          <Link to={role === "Parent" ? "/parent/dashboard" : "/admin/dashboard"} className="flex items-center gap-3">
+          <Link to={defaultRouteForRole(role)} className="flex items-center gap-3">
             <div className="grid h-13 w-13 place-items-center rounded-2xl border border-gold/40 bg-white p-1 shadow-sm">
               <img src="/bnos-melochim-logo.jpeg" alt="Bnos Melochim logo" className="h-full w-full rounded-xl object-contain" />
             </div>
@@ -486,9 +792,9 @@ function Shell({ role, setRole, children }: { role: Role; setRole: (role: null) 
         </nav>
         <button
           className="absolute bottom-5 left-5 right-5 flex items-center justify-center gap-2 rounded-xl border border-slate-200 px-4 py-3 font-semibold text-slate-600 hover:bg-ivory"
-          onClick={() => {
-            setRole(null);
-            navigate("/");
+          onClick={async () => {
+            if (supabase) await supabase.auth.signOut();
+            navigate("/login");
           }}
         >
           <LogOut className="h-4 w-4" aria-hidden="true" /> Sign out
@@ -510,7 +816,11 @@ function Shell({ role, setRole, children }: { role: Role; setRole: (role: null) 
                 <option>English</option>
                 <option>Yiddish</option>
               </select>
-              <span className="hidden rounded-full bg-ivory px-4 py-2 text-sm font-semibold text-navy sm:inline">{roleLabels[role]}</span>
+              <div className="hidden rounded-2xl bg-ivory px-4 py-2 text-sm sm:block">
+                <p className="font-bold text-navy">{userName}</p>
+                <p className="text-xs text-slate-600">{roleLabels[role]} · {profile.email}</p>
+              </div>
+              <Link to="/reset-password" className="hidden rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-navy hover:bg-ivory focus-visible:bg-ivory md:inline">Change password</Link>
             </div>
           </div>
         </header>
@@ -533,31 +843,65 @@ const parentNav: NavItem[] = [
   { label: "Account Settings", path: "/parent/settings", icon: Settings },
 ];
 
+function roleBasePath(role: Role) {
+  if (role === "parent") return "/parent";
+  if (role === "registration_office") return "/office";
+  if (role === "tuition_office") return "/tuition-admin";
+  if (role === "school_management") return "/management";
+  return "/admin";
+}
+
+function defaultRouteForRole(role: Role) {
+  return `${roleBasePath(role)}/dashboard`;
+}
+
+function isAuthorizedPath(role: Role, path: string) {
+  if (path === "/reset-password" || path === "/login") return true;
+  if (role === "super_admin") return path.startsWith("/admin");
+  const base = roleBasePath(role);
+  if (!path.startsWith(base)) return false;
+  const section = path.split("/")[2] || "dashboard";
+  const allowedSections: Record<Exclude<Role, "super_admin">, string[]> = {
+    parent: ["dashboard", "family", "children", "registration", "documents", "agreements", "tuition", "payments", "messages", "settings"],
+    registration_office: ["dashboard", "families", "students", "registration", "documents", "admissions", "reports", "messages", "settings"],
+    tuition_office: ["dashboard", "families", "students", "tuition", "payments", "reports", "messages"],
+    school_management: ["dashboard", "families", "students", "registration", "documents", "admissions", "tuition", "payments", "reports", "messages"],
+  };
+  return allowedSections[role].includes(section);
+}
+
 function adminNav(role: Role) {
+  const base = roleBasePath(role);
   const all: NavItem[] = [
-    { label: "Dashboard", path: "/admin/dashboard", icon: LayoutDashboard },
-    { label: "Families", path: "/admin/families", icon: Users },
-    { label: "Students", path: "/admin/students", icon: BookOpen },
-    { label: "Registration", path: "/admin/registration", icon: ClipboardCheck },
-    { label: "Documents", path: "/admin/documents", icon: FileCheck2 },
-    { label: "Admissions Review", path: "/admin/admissions", icon: ShieldCheck },
-    { label: "Tuition", path: "/admin/tuition", icon: Banknote },
-    { label: "Payments", path: "/admin/payments", icon: Banknote },
-    { label: "Reports", path: "/admin/reports", icon: Download },
-    { label: "Messages", path: "/admin/messages", icon: MessageSquare },
-    { label: "School Settings", path: "/admin/settings", icon: Settings },
+    { label: "Dashboard", path: `${base}/dashboard`, icon: LayoutDashboard },
+    { label: "Families", path: `${base}/families`, icon: Users },
+    { label: "Students", path: `${base}/students`, icon: BookOpen },
+    { label: "Registration", path: `${base}/registration`, icon: ClipboardCheck },
+    { label: "Documents", path: `${base}/documents`, icon: FileCheck2 },
+    { label: "Admissions Review", path: `${base}/admissions`, icon: ShieldCheck },
+    { label: "Tuition", path: `${base}/tuition`, icon: Banknote },
+    { label: "Payments", path: `${base}/payments`, icon: Banknote },
+    { label: "Reports", path: `${base}/reports`, icon: Download },
+    { label: "Messages", path: `${base}/messages`, icon: MessageSquare },
+    { label: "Users & Access", path: `${base}/users`, icon: ShieldCheck },
+    { label: "School Settings", path: `${base}/settings`, icon: Settings },
   ];
   const allowed =
-    role === "School Office"
-      ? all.filter(({ label }) => !["Payments"].includes(label))
-      : role === "Tuition Administrator"
+    role === "registration_office"
+      ? all.filter(({ label }) => !["Payments", "Tuition", "Users & Access"].includes(label))
+      : role === "tuition_office"
         ? all.filter(({ label }) => ["Dashboard", "Families", "Students", "Tuition", "Payments", "Reports", "Messages"].includes(label))
-        : all;
+        : role === "school_management"
+          ? all.filter(({ label }) => !["Users & Access", "School Settings"].includes(label))
+          : all;
   return allowed;
 }
 
 function Portal({ state, setState, role, notify }: { state: AppState; setState: React.Dispatch<React.SetStateAction<AppState>>; role: Role; notify: (message: string) => void }) {
   const parentFamily = state.families[0];
+  if (role === "parent" && !parentFamily) {
+    return <SimplePage title="Family access pending" description="Your account is active, but no family record is linked yet. Please contact the school office." />;
+  }
   return (
     <Routes>
       <Route path="/parent/dashboard" element={<ParentDashboard state={state} family={parentFamily} />} />
@@ -571,20 +915,21 @@ function Portal({ state, setState, role, notify }: { state: AppState; setState: 
       <Route path="/parent/payments" element={<Payments state={state} familyId={parentFamily.id} />} />
       <Route path="/parent/messages" element={<Messages state={state} familyId={parentFamily.id} notify={notify} />} />
       <Route path="/parent/settings" element={<SimplePage title="Account Settings" description="Update profile preferences, notification channels, and account contact defaults." />} />
-      <Route path="/admin/dashboard" element={<AdminDashboard state={state} role={role} />} />
-      <Route path="/admin/families" element={<FamiliesTable state={state} />} />
-      <Route path="/admin/families/:familyId" element={<FamilyDetail state={state} />} />
-      <Route path="/admin/students" element={<StudentsTable state={state} />} />
-      <Route path="/admin/students/:studentId" element={<StudentDetail state={state} admin />} />
-      <Route path="/admin/registration" element={<RegistrationQueue state={state} />} />
-      <Route path="/admin/documents" element={<Documents state={state} setState={setState} notify={notify} />} />
-      <Route path="/admin/admissions" element={<Admissions state={state} setState={setState} notify={notify} />} />
-      <Route path="/admin/tuition" element={<Tuition state={state} setState={setState} notify={notify} />} />
-      <Route path="/admin/payments" element={<Payments state={state} />} />
-      <Route path="/admin/reports" element={<Reports state={state} notify={notify} />} />
-      <Route path="/admin/messages" element={<Messages state={state} notify={notify} />} />
-      <Route path="/admin/settings" element={<SimplePage title="School Settings" description="Manage academic year labels, document requirements, tuition defaults, and future Supabase integration settings." />} />
-      <Route path="*" element={<Navigate to={role === "Parent" ? "/parent/dashboard" : "/admin/dashboard"} replace />} />
+      <Route path="/:staffBase/dashboard" element={<AdminDashboard state={state} role={role} />} />
+      <Route path="/:staffBase/families" element={<FamiliesTable state={state} />} />
+      <Route path="/:staffBase/families/:familyId" element={<FamilyDetail state={state} />} />
+      <Route path="/:staffBase/students" element={<StudentsTable state={state} />} />
+      <Route path="/:staffBase/students/:studentId" element={<StudentDetail state={state} admin />} />
+      <Route path="/:staffBase/registration" element={<RegistrationQueue state={state} />} />
+      <Route path="/:staffBase/documents" element={<Documents state={state} setState={setState} notify={notify} />} />
+      <Route path="/:staffBase/admissions" element={<Admissions state={state} setState={setState} notify={notify} />} />
+      <Route path="/:staffBase/tuition" element={<Tuition state={state} setState={setState} notify={notify} />} />
+      <Route path="/:staffBase/payments" element={<Payments state={state} />} />
+      <Route path="/:staffBase/reports" element={<Reports state={state} notify={notify} />} />
+      <Route path="/:staffBase/messages" element={<Messages state={state} notify={notify} />} />
+      <Route path="/admin/users" element={<UsersAccess notify={notify} />} />
+      <Route path="/:staffBase/settings" element={<SimplePage title="School Settings" description="Manage academic year labels, document requirements, tuition defaults, and secure Supabase settings." />} />
+      <Route path="*" element={<Navigate to={defaultRouteForRole(role)} replace />} />
     </Routes>
   );
 }
@@ -992,6 +1337,7 @@ function AdminDashboard({ state, role }: { state: AppState; role: Role }) {
 function FamiliesTable({ state }: { state: AppState }) {
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("All");
+  const staffBase = `/${useLocation().pathname.split("/")[1] || "admin"}`;
   const rows = state.families.filter((f) => {
     const familyStudents = state.students.filter((s) => s.familyId === f.id).map((s) => s.legalName).join(" ");
     const haystack = `${f.id} ${f.name} ${f.parents.map((p) => p.name).join(" ")} ${familyStudents} ${f.phone} ${f.email}`.toLowerCase();
@@ -1005,7 +1351,7 @@ function FamiliesTable({ state }: { state: AppState }) {
       <Table headers={["Family ID", "Family", "Parents", "Address", "Children", "Registration", "Balance", "Status", ""]}>
         {rows.map((f) => {
           const account = state.tuition.find((a) => a.familyId === f.id)!;
-          return <tr key={f.id}><td>{f.id}</td><td>{f.name}</td><td>{f.parents.map((p) => p.name).join(", ")}</td><td>{f.address}</td><td>{state.students.filter((s) => s.familyId === f.id).length}</td><td>{f.registrationPercent}%</td><td>{currency(total(account) - account.paid)}</td><td><StatusBadge status={f.status} /></td><td><Link to={`/admin/families/${f.id}`} className="text-navy font-bold">View</Link></td></tr>;
+          return <tr key={f.id}><td>{f.id}</td><td>{f.name}</td><td>{f.parents.map((p) => p.name).join(", ")}</td><td>{f.address}</td><td>{state.students.filter((s) => s.familyId === f.id).length}</td><td>{f.registrationPercent}%</td><td>{currency(total(account) - account.paid)}</td><td><StatusBadge status={f.status} /></td><td><Link to={`${staffBase}/families/${f.id}`} className="text-navy font-bold">View</Link></td></tr>;
         })}
       </Table>
     </div>
@@ -1015,6 +1361,7 @@ function FamiliesTable({ state }: { state: AppState }) {
 function StudentsTable({ state }: { state: AppState }) {
   const [query, setQuery] = useState("");
   const [grade, setGrade] = useState("All");
+  const staffBase = `/${useLocation().pathname.split("/")[1] || "admin"}`;
   const rows = state.students.filter((s) => `${s.preferredName} ${s.legalName} ${s.grade}`.toLowerCase().includes(query.toLowerCase()) && (grade === "All" || s.grade === grade));
   return (
     <div className="space-y-6">
@@ -1022,7 +1369,7 @@ function StudentsTable({ state }: { state: AppState }) {
       <SearchBar query={query} setQuery={setQuery} />
       <FilterBar value={grade} setValue={setGrade} options={["All", ...Array.from(new Set(state.students.map((s) => s.grade)))]} />
       <Table headers={["Student", "Family", "Grade", "Program", "Registration", "Documents", "Tuition", ""]}>
-        {rows.map((s) => <tr key={s.id}><td>{s.legalName}</td><td>{s.familyId}</td><td>{s.grade}</td><td>{s.program}</td><td><StatusBadge status={s.registrationStatus} /></td><td><StatusBadge status={s.documentStatus} /></td><td><StatusBadge status={s.tuitionStatus} /></td><td><Link to={`/admin/students/${s.id}`} className="font-bold text-navy">View</Link></td></tr>)}
+        {rows.map((s) => <tr key={s.id}><td>{s.legalName}</td><td>{s.familyId}</td><td>{s.grade}</td><td>{s.program}</td><td><StatusBadge status={s.registrationStatus} /></td><td><StatusBadge status={s.documentStatus} /></td><td><StatusBadge status={s.tuitionStatus} /></td><td><Link to={`${staffBase}/students/${s.id}`} className="font-bold text-navy">View</Link></td></tr>)}
       </Table>
     </div>
   );
@@ -1120,6 +1467,60 @@ function Messages({ state, familyId, notify }: { state: AppState; familyId?: str
 
 function SimplePage({ title, description }: { title: string; description: string }) {
   return <div className="space-y-6"><PageTitle title={title} subtitle={description} /><Card><p className="text-slate-600">This section is available for school configuration and future workflow settings.</p></Card></div>;
+}
+
+function UsersAccess({ notify }: { notify: (message: string) => void }) {
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState<Role | "all">("all");
+  const users = [
+    { name: "School Super Admin", email: "admin@bnosmelochim.org", role: "super_admin" as Role, status: "Active", last: "Today" },
+    { name: "Registration Office", email: "registration@bnosmelochim.org", role: "registration_office" as Role, status: "Active", last: "Yesterday" },
+    { name: "Tuition Office", email: "tuition@bnosmelochim.org", role: "tuition_office" as Role, status: "Invited", last: "Invitation pending" },
+    { name: "Friedman Guardian", email: "parent.friedman@example.com", role: "parent" as Role, status: "Active", last: "July 24, 2026" },
+  ].filter((user) => (filter === "all" || user.role === filter) && `${user.name} ${user.email}`.toLowerCase().includes(query.toLowerCase()));
+
+  const secureAction = (action: string) => notify(`${action} should run through a Supabase Edge Function with the service role kept off the browser.`);
+
+  return (
+    <div className="space-y-6">
+      <PageTitle title="Users & Access" subtitle="Invite users, assign roles, disable accounts, reactivate access, and review recent activity." />
+      <Card>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex flex-1 flex-wrap gap-3">
+            <label className="sr-only" htmlFor="user-search">Search users</label>
+            <input id="user-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search by name or email" className="min-w-[220px] flex-1 rounded-xl border px-4 py-3" />
+            <label className="sr-only" htmlFor="role-filter">Filter by role</label>
+            <select id="role-filter" value={filter} onChange={(event) => setFilter(event.target.value as Role | "all")} className="rounded-xl border px-4 py-3">
+              <option value="all">All roles</option>
+              <option value="parent">Parent</option>
+              <option value="registration_office">Registration Office</option>
+              <option value="tuition_office">Tuition Office</option>
+              <option value="school_management">School Management</option>
+              <option value="super_admin">Super Admin</option>
+            </select>
+          </div>
+          <button onClick={() => secureAction("Invite user")} className="rounded-xl bg-burgundy px-5 py-3 font-bold text-white hover:bg-burgundy-dark">Invite User</button>
+        </div>
+      </Card>
+      <Table headers={["User", "Role", "Status", "Last activity", "Actions"]}>
+        {users.map((user) => (
+          <tr key={user.email}>
+            <td><p className="font-bold text-navy">{user.name}</p><p className="text-sm text-slate-500">{user.email}</p></td>
+            <td>{roleLabels[user.role]}</td>
+            <td><StatusBadge status={user.status} /></td>
+            <td className="text-slate-600">{user.last}</td>
+            <td>
+              <div className="flex flex-wrap gap-2">
+                <button onClick={() => secureAction("Assign role")} className="rounded-lg border px-3 py-1.5 text-sm font-semibold hover:bg-ivory">Assign</button>
+                <button onClick={() => secureAction("Disable or reactivate account")} className="rounded-lg border px-3 py-1.5 text-sm font-semibold hover:bg-ivory">Disable/Reactivate</button>
+                <button onClick={() => secureAction("Open activity log")} className="rounded-lg border px-3 py-1.5 text-sm font-semibold hover:bg-ivory">Activity</button>
+              </div>
+            </td>
+          </tr>
+        ))}
+      </Table>
+    </div>
+  );
 }
 
 function PageTitle({ title, subtitle }: { title: string; subtitle: string }) {
