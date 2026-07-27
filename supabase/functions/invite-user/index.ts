@@ -119,13 +119,21 @@ Deno.serve(async (request) => {
         },
       });
       invitedUser = generated?.user ?? null;
-      setupUrl = generated?.properties?.action_link ?? null;
-      if (generateError || !invitedUser || !setupUrl) {
+      if (generateError || !invitedUser) {
         return json(request, { error: safeInviteError(inviteError?.message || generateError?.message) }, 400);
       }
     }
-    if (!setupUrl) {
-      const { data: generated } = await admin.auth.admin.generateLink({
+    const { data: recoveryLink, error: recoveryLinkError } = await admin.auth.admin.generateLink({
+      type: "recovery",
+      email: body.email,
+      options: {
+        redirectTo: productionInviteRedirect,
+      },
+    });
+    setupUrl = recoveryLink?.properties?.action_link ?? null;
+
+    if (recoveryLinkError || !setupUrl) {
+      const { data: fallbackInviteLink } = await admin.auth.admin.generateLink({
         type: "invite",
         email: body.email,
         options: {
@@ -138,7 +146,7 @@ Deno.serve(async (request) => {
           },
         },
       });
-      setupUrl = generated?.properties?.action_link ?? null;
+      setupUrl = fallbackInviteLink?.properties?.action_link ?? null;
     }
 
     const profilePayload = {

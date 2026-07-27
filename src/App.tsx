@@ -759,6 +759,9 @@ function ResetPassword({ invitation = false }: { invitation?: boolean }) {
       } else if (tokenHash) {
         const { error } = await supabase.auth.verifyOtp({ token_hash: tokenHash, type: type === "invite" ? "invite" : "recovery" });
         if (error) setMessage("This link is no longer valid. Please request a new one.");
+      } else if (invitation) {
+        const { data } = await supabase.auth.getSession();
+        if (!data.session) setMessage("Open the newest setup link from Users & Access. Older invite links will not work.");
       }
       setTokenReady(true);
     };
@@ -771,6 +774,8 @@ function ResetPassword({ invitation = false }: { invitation?: boolean }) {
     if (!tokenReady) return setMessage("Still checking this secure link. Please try again in a moment.");
     if (password.length < 8) return setMessage("Use at least 8 characters.");
     if (password !== confirm) return setMessage("Passwords do not match.");
+    const { data: sessionData } = await supabase.auth.getSession();
+    if (!sessionData.session) return setMessage(invitation ? "Open the newest setup link from Users & Access, then set the password." : "Open the newest reset link, then set the password.");
     setBusy(true);
     const { error } = await supabase.auth.updateUser({ password });
     setBusy(false);
