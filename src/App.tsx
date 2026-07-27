@@ -1745,7 +1745,8 @@ function UsersAccess({ currentRole, notify }: { currentRole: Role; notify: (mess
     if (validationError) return setInviteError(validationError);
     if (!supabase) return setInviteError("Supabase is not configured.");
     const { data: sessionData } = await supabase.auth.getSession();
-    const accessToken = sessionData.session?.access_token;
+    const { data: refreshedSessionData } = await supabase.auth.refreshSession();
+    const accessToken = refreshedSessionData.session?.access_token ?? sessionData.session?.access_token;
     if (!accessToken) return setInviteError("Your session expired. Please sign out and sign in again.");
 
     setInviting(true);
