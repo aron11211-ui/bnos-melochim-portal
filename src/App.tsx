@@ -1700,9 +1700,13 @@ function UsersAccess({ currentRole, notify }: { currentRole: Role; notify: (mess
     const validationError = validateInvite();
     if (validationError) return setInviteError(validationError);
     if (!supabase) return setInviteError("Supabase is not configured.");
+    const { data: sessionData } = await supabase.auth.getSession();
+    const accessToken = sessionData.session?.access_token;
+    if (!accessToken) return setInviteError("Your session expired. Please sign out and sign in again.");
 
     setInviting(true);
     const { data, error } = await supabase.functions.invoke("invite-user", {
+      headers: { Authorization: `Bearer ${accessToken}` },
       body: {
         email: invite.email.trim(),
         first_name: invite.first_name.trim(),
