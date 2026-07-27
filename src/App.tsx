@@ -732,10 +732,39 @@ function ResetPassword({ invitation = false }: { invitation?: boolean }) {
   const [confirm, setConfirm] = useState("");
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [tokenReady, setTokenReady] = useState(false);
+
+  useEffect(() => {
+    const prepareTokenSession = async () => {
+      if (!supabase) {
+        setMessage("Supabase is not configured yet.");
+        setTokenReady(true);
+        return;
+      }
+      const url = new URL(window.location.href);
+      const hashParams = new URLSearchParams(url.hash.replace(/^#/, ""));
+      const queryParams = url.searchParams;
+      const accessToken = hashParams.get("access_token") ?? queryParams.get("access_token");
+      const refreshToken = hashParams.get("refresh_token") ?? queryParams.get("refresh_token");
+      const tokenHash = queryParams.get("token_hash") ?? hashParams.get("token_hash");
+      const type = queryParams.get("type") ?? hashParams.get("type") ?? (invitation ? "invite" : "recovery");
+
+      if (accessToken && refreshToken) {
+        const { error } = await supabase.auth.setSession({ access_token: accessToken, refresh_token: refreshToken });
+        if (error) setMessage("This link is no longer valid. Please request a new one.");
+      } else if (tokenHash) {
+        const { error } = await supabase.auth.verifyOtp({ token_hash: tokenHash, type: type === "invite" ? "invite" : "recovery" });
+        if (error) setMessage("This link is no longer valid. Please request a new one.");
+      }
+      setTokenReady(true);
+    };
+    void prepareTokenSession();
+  }, [invitation]);
 
   const updatePassword = async (event: FormEvent) => {
     event.preventDefault();
     if (!supabase) return setMessage("Supabase is not configured yet.");
+    if (!tokenReady) return setMessage("Still checking this secure link. Please try again in a moment.");
     if (password.length < 8) return setMessage("Use at least 8 characters.");
     if (password !== confirm) return setMessage("Passwords do not match.");
     setBusy(true);
@@ -743,6 +772,10 @@ function ResetPassword({ invitation = false }: { invitation?: boolean }) {
     setBusy(false);
     if (error) setMessage("This reset link is no longer valid. Please request a new one.");
     else {
+      if (invitation) {
+        const { data } = await supabase.auth.getUser();
+        if (data.user) await supabase.from("profiles").update({ status: "active" }).eq("id", data.user.id);
+      }
       setMessage("Password updated. You can now sign in.");
       window.setTimeout(() => navigate("/login", { replace: true }), 1200);
     }
