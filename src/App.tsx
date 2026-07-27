@@ -172,6 +172,24 @@ const roleDescriptions: Record<Role, string> = {
   super_admin: "Full system administration, users, roles, and settings",
 };
 
+const emptyFamily: Family = {
+  id: "no-family-linked",
+  name: "No family linked",
+  address: "",
+  city: "",
+  state: "",
+  zip: "",
+  phone: "",
+  email: "",
+  shul: "",
+  emergencyContacts: [],
+  maternalGrandparents: "",
+  paternalGrandparents: "",
+  parents: [],
+  status: "Not Started",
+  registrationPercent: 0,
+};
+
 const docTypes = [
   "Registration form",
   "Birth certificate",
@@ -902,18 +920,19 @@ function Portal({ state, setState, role, notify }: { state: AppState; setState: 
   if (role === "parent" && !parentFamily) {
     return <SimplePage title="Family access pending" description="Your account is active, but no family record is linked yet. Please contact the school office." />;
   }
+  const routeFamily = parentFamily ?? emptyFamily;
   return (
     <Routes>
-      <Route path="/parent/dashboard" element={<ParentDashboard state={state} family={parentFamily} />} />
-      <Route path="/parent/family" element={<MyFamily state={state} setState={setState} family={parentFamily} notify={notify} />} />
-      <Route path="/parent/children" element={<Children state={state} familyId={parentFamily.id} />} />
+      <Route path="/parent/dashboard" element={<ParentDashboard state={state} family={routeFamily} />} />
+      <Route path="/parent/family" element={<MyFamily state={state} setState={setState} family={routeFamily} notify={notify} />} />
+      <Route path="/parent/children" element={<Children state={state} familyId={routeFamily.id} />} />
       <Route path="/parent/children/:studentId" element={<StudentDetail state={state} />} />
-      <Route path="/parent/registration" element={<RegistrationWizard state={state} setState={setState} family={parentFamily} notify={notify} />} />
-      <Route path="/parent/documents" element={<Documents state={state} setState={setState} familyId={parentFamily.id} notify={notify} parent />} />
-      <Route path="/parent/agreements" element={<Agreements state={state} setState={setState} familyId={parentFamily.id} notify={notify} />} />
-      <Route path="/parent/tuition" element={<Tuition state={state} setState={setState} familyId={parentFamily.id} notify={notify} parent />} />
-      <Route path="/parent/payments" element={<Payments state={state} familyId={parentFamily.id} />} />
-      <Route path="/parent/messages" element={<Messages state={state} familyId={parentFamily.id} notify={notify} />} />
+      <Route path="/parent/registration" element={<RegistrationWizard state={state} setState={setState} family={routeFamily} notify={notify} />} />
+      <Route path="/parent/documents" element={<Documents state={state} setState={setState} familyId={routeFamily.id} notify={notify} parent />} />
+      <Route path="/parent/agreements" element={<Agreements state={state} setState={setState} familyId={routeFamily.id} notify={notify} />} />
+      <Route path="/parent/tuition" element={<Tuition state={state} setState={setState} familyId={routeFamily.id} notify={notify} parent />} />
+      <Route path="/parent/payments" element={<Payments state={state} familyId={routeFamily.id} />} />
+      <Route path="/parent/messages" element={<Messages state={state} familyId={routeFamily.id} notify={notify} />} />
       <Route path="/parent/settings" element={<SimplePage title="Account Settings" description="Update profile preferences, notification channels, and account contact defaults." />} />
       <Route path="/:staffBase/dashboard" element={<AdminDashboard state={state} role={role} />} />
       <Route path="/:staffBase/families" element={<FamiliesTable state={state} />} />
