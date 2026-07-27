@@ -1,12 +1,29 @@
 import { createClient } from "@supabase/supabase-js";
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string | undefined;
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
+function cleanEnvValue(value: unknown, key: string) {
+  return String(value ?? "")
+    .trim()
+    .replace(new RegExp(`^${key}\\s*=\\s*`), "")
+    .split(/\s+/)[0]
+    .trim();
+}
 
-export const isSupabaseConfigured = Boolean(supabaseUrl && supabaseAnonKey);
+const supabaseUrl = cleanEnvValue(import.meta.env.VITE_SUPABASE_URL, "VITE_SUPABASE_URL");
+const supabaseAnonKey = cleanEnvValue(import.meta.env.VITE_SUPABASE_ANON_KEY, "VITE_SUPABASE_ANON_KEY");
+
+function isHttpUrl(value: string) {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" || url.protocol === "http:";
+  } catch {
+    return false;
+  }
+}
+
+export const isSupabaseConfigured = Boolean(isHttpUrl(supabaseUrl) && supabaseAnonKey);
 
 export const supabase = isSupabaseConfigured
-  ? createClient(supabaseUrl!, supabaseAnonKey!, {
+  ? createClient(supabaseUrl, supabaseAnonKey, {
       auth: {
         autoRefreshToken: true,
         detectSessionInUrl: true,
