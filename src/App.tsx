@@ -935,11 +935,11 @@ function Portal({ state, setState, role, notify }: { state: AppState; setState: 
       <Route path="/parent/messages" element={<Messages state={state} familyId={routeFamily.id} notify={notify} />} />
       <Route path="/parent/settings" element={<SimplePage title="Account Settings" description="Update profile preferences, notification channels, and account contact defaults." />} />
       <Route path="/:staffBase/dashboard" element={<AdminDashboard state={state} role={role} />} />
-      <Route path="/:staffBase/families" element={<FamiliesTable state={state} />} />
+      <Route path="/:staffBase/families" element={<FamiliesTable state={state} setState={setState} currentRole={role} notify={notify} />} />
       <Route path="/:staffBase/families/:familyId" element={<FamilyDetail state={state} />} />
       <Route path="/:staffBase/students" element={<StudentsTable state={state} />} />
       <Route path="/:staffBase/students/:studentId" element={<StudentDetail state={state} admin />} />
-      <Route path="/:staffBase/registration" element={<RegistrationQueue state={state} />} />
+      <Route path="/:staffBase/registration" element={<RegistrationQueue state={state} setState={setState} currentRole={role} notify={notify} />} />
       <Route path="/:staffBase/documents" element={<Documents state={state} setState={setState} notify={notify} />} />
       <Route path="/:staffBase/admissions" element={<Admissions state={state} setState={setState} notify={notify} />} />
       <Route path="/:staffBase/tuition" element={<Tuition state={state} setState={setState} notify={notify} />} />
@@ -1353,23 +1353,152 @@ function AdminDashboard({ state, role }: { state: AppState; role: Role }) {
   );
 }
 
-function FamiliesTable({ state }: { state: AppState }) {
+const zeroTuitionAccount = (familyId: string): TuitionAccount => ({
+  familyId,
+  annualTuition: 0,
+  fees: 0,
+  transportation: 0,
+  registration: 0,
+  discounts: 0,
+  scholarships: 0,
+  credits: 0,
+  paid: 0,
+  plan: "Custom arrangement",
+  nextDue: "",
+  failedPayments: 0,
+  collectionNotes: [],
+});
+
+function FamiliesTable({ state, setState, currentRole, notify }: { state: AppState; setState: React.Dispatch<React.SetStateAction<AppState>>; currentRole: Role; notify: (message: string) => void }) {
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("All");
+  const [showAdd, setShowAdd] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [form, setForm] = useState({
+    family_code: "",
+    family_name: "",
+    guardian_name: "",
+    guardian_email: "",
+    primary_phone: "",
+    address_line1: "",
+    city: "",
+    state: "NJ",
+    postal_code: "",
+    shul: "",
+  });
   const staffBase = `/${useLocation().pathname.split("/")[1] || "admin"}`;
+  const canAddFamily = currentRole === "super_admin" || currentRole === "registration_office";
   const rows = state.families.filter((f) => {
     const familyStudents = state.students.filter((s) => s.familyId === f.id).map((s) => s.legalName).join(" ");
     const haystack = `${f.id} ${f.name} ${f.parents.map((p) => p.name).join(" ")} ${familyStudents} ${f.phone} ${f.email}`.toLowerCase();
     return haystack.includes(query.toLowerCase()) && (status === "All" || f.status === status);
   });
+  const updateForm = (field: keyof typeof form, value: string) => setForm((current) => ({ ...current, [field]: value }));
+  const saveFamily = async (event: FormEvent) => {
+    event.preventDefault();
+    setError("");
+    if (!canAddFamily) return setError("Your role cannot create family records.");
+    if (!form.family_code.trim()) return setError("Family ID/code is required.");
+    if (!form.family_name.trim()) return setError("Family name is required.");
+    if (!form.guardian_email.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.guardian_email.trim())) return setError("Enter a valid guardian email.");
+    if (!supabase) return setError("Supabase is not configured.");
+
+    setSaving(true);
+    const guardian = {
+      name: form.guardian_name.trim(),
+      relationship: "Guardian",
+      phone: form.primary_phone.trim(),
+      email: form.guardian_email.trim().toLowerCase(),
+      employer: "",
+    };
+    const { data, error: insertError } = await supabase
+      .from("families")
+      .insert({
+        family_code: form.family_code.trim(),
+        family_name: form.family_name.trim(),
+        address_line1: form.address_line1.trim(),
+        city: form.city.trim(),
+        state: form.state.trim(),
+        postal_code: form.postal_code.trim(),
+        primary_email: form.guardian_email.trim().toLowerCase(),
+        primary_phone: form.primary_phone.trim(),
+        shul: form.shul.trim(),
+        guardians: [guardian],
+        registration_status: "in_progress",
+        registration_percent: 0,
+      })
+      .select("id,family_code,family_name,address_line1,city,state,postal_code,primary_email,primary_phone,shul,guardians,registration_status,registration_percent")
+      .single();
+    setSaving(false);
+
+    if (insertError || !data) return setError(insertError?.message || "Family could not be created.");
+
+    const newFamily: Family = {
+      id: data.family_code,
+      name: data.family_name,
+      address: data.address_line1 ?? "",
+      city: data.city ?? "",
+      state: data.state ?? "",
+      zip: data.postal_code ?? "",
+      phone: data.primary_phone ?? "",
+      email: data.primary_email ?? "",
+      shul: data.shul ?? "",
+      emergencyContacts: [],
+      maternalGrandparents: "",
+      paternalGrandparents: "",
+      parents: Array.isArray(data.guardians) ? data.guardians : [guardian],
+      status: toRegistrationStatus(data.registration_status),
+      registrationPercent: data.registration_percent ?? 0,
+    };
+
+    setState((current) => ({
+      ...current,
+      families: [newFamily, ...current.families.filter((family) => family.id !== newFamily.id)],
+      tuition: current.tuition.some((account) => account.familyId === newFamily.id) ? current.tuition : [zeroTuitionAccount(newFamily.id), ...current.tuition],
+    }));
+    notify(`${newFamily.name} family record created.`);
+    setForm({ family_code: "", family_name: "", guardian_name: "", guardian_email: "", primary_phone: "", address_line1: "", city: "", state: "NJ", postal_code: "", shul: "" });
+    setShowAdd(false);
+  };
+
   return (
     <div className="space-y-6">
       <PageTitle title="Families" subtitle="Search by family, parent, student, phone, email, or family ID." />
+      {canAddFamily && (
+        <Card>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h3 className="text-xl font-bold text-navy">Create family record</h3>
+              <p className="mt-1 text-sm text-slate-600">Add a family here first, then invite parent/guardian accounts from Users & Access.</p>
+            </div>
+            <button onClick={() => setShowAdd((value) => !value)} className="rounded-xl bg-burgundy px-5 py-3 font-bold text-white hover:bg-burgundy-dark">{showAdd ? "Close" : "Add Family"}</button>
+          </div>
+          {showAdd && (
+            <form onSubmit={saveFamily} className="mt-5 grid gap-4">
+              {error && <p className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm font-semibold text-red-700">{error}</p>}
+              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                <label className="text-sm font-semibold text-slate-700">Family ID / Code<input className="mt-1 w-full rounded-xl border px-4 py-3" value={form.family_code} onChange={(event) => updateForm("family_code", event.target.value)} placeholder="FAM-1002" /></label>
+                <label className="text-sm font-semibold text-slate-700">Family name<input className="mt-1 w-full rounded-xl border px-4 py-3" value={form.family_name} onChange={(event) => updateForm("family_name", event.target.value)} placeholder="Cohen Family" /></label>
+                <label className="text-sm font-semibold text-slate-700">Guardian name<input className="mt-1 w-full rounded-xl border px-4 py-3" value={form.guardian_name} onChange={(event) => updateForm("guardian_name", event.target.value)} placeholder="Mrs. Cohen" /></label>
+                <label className="text-sm font-semibold text-slate-700">Guardian email<input className="mt-1 w-full rounded-xl border px-4 py-3" type="email" value={form.guardian_email} onChange={(event) => updateForm("guardian_email", event.target.value)} /></label>
+                <label className="text-sm font-semibold text-slate-700">Phone<input className="mt-1 w-full rounded-xl border px-4 py-3" value={form.primary_phone} onChange={(event) => updateForm("primary_phone", event.target.value)} /></label>
+                <label className="text-sm font-semibold text-slate-700">Shul<input className="mt-1 w-full rounded-xl border px-4 py-3" value={form.shul} onChange={(event) => updateForm("shul", event.target.value)} /></label>
+                <label className="text-sm font-semibold text-slate-700 md:col-span-2">Address<input className="mt-1 w-full rounded-xl border px-4 py-3" value={form.address_line1} onChange={(event) => updateForm("address_line1", event.target.value)} /></label>
+                <label className="text-sm font-semibold text-slate-700">City<input className="mt-1 w-full rounded-xl border px-4 py-3" value={form.city} onChange={(event) => updateForm("city", event.target.value)} /></label>
+                <label className="text-sm font-semibold text-slate-700">State<input className="mt-1 w-full rounded-xl border px-4 py-3" value={form.state} onChange={(event) => updateForm("state", event.target.value)} /></label>
+                <label className="text-sm font-semibold text-slate-700">ZIP<input className="mt-1 w-full rounded-xl border px-4 py-3" value={form.postal_code} onChange={(event) => updateForm("postal_code", event.target.value)} /></label>
+              </div>
+              <button disabled={saving} className="w-fit rounded-xl bg-navy px-5 py-3 font-bold text-white hover:bg-navy/90 disabled:opacity-60">{saving ? "Creating..." : "Create Family"}</button>
+            </form>
+          )}
+        </Card>
+      )}
       <SearchBar query={query} setQuery={setQuery} />
       <FilterBar value={status} setValue={setStatus} options={["All", ...Array.from(new Set(state.families.map((f) => f.status)))]} />
       <Table headers={["Family ID", "Family", "Parents", "Address", "Children", "Registration", "Balance", "Status", ""]}>
         {rows.map((f) => {
-          const account = state.tuition.find((a) => a.familyId === f.id)!;
+          const account = state.tuition.find((a) => a.familyId === f.id) ?? zeroTuitionAccount(f.id);
           return <tr key={f.id}><td>{f.id}</td><td>{f.name}</td><td>{f.parents.map((p) => p.name).join(", ")}</td><td>{f.address}</td><td>{state.students.filter((s) => s.familyId === f.id).length}</td><td>{f.registrationPercent}%</td><td>{currency(total(account) - account.paid)}</td><td><StatusBadge status={f.status} /></td><td><Link to={`${staffBase}/families/${f.id}`} className="text-navy font-bold">View</Link></td></tr>;
         })}
       </Table>
@@ -1431,8 +1560,8 @@ function StudentDetail({ state, admin = false }: { state: AppState; admin?: bool
   );
 }
 
-function RegistrationQueue({ state }: { state: AppState }) {
-  return <FamiliesTable state={{ ...state, families: state.families.filter((f) => f.status !== "Fully Enrolled") }} />;
+function RegistrationQueue({ state, setState, currentRole, notify }: { state: AppState; setState: React.Dispatch<React.SetStateAction<AppState>>; currentRole: Role; notify: (message: string) => void }) {
+  return <FamiliesTable state={{ ...state, families: state.families.filter((f) => f.status !== "Fully Enrolled") }} setState={setState} currentRole={currentRole} notify={notify} />;
 }
 
 function Admissions({ state, setState, notify }: { state: AppState; setState: React.Dispatch<React.SetStateAction<AppState>>; notify: (message: string) => void }) {
