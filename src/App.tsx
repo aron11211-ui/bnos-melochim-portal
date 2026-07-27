@@ -129,6 +129,8 @@ type TuitionAccount = {
 
 type Family = {
   id: string;
+  dbId?: string;
+  code?: string;
   name: string;
   address: string;
   city: string;
@@ -206,6 +208,8 @@ const roleDescriptions: Record<Role, string> = {
 
 const emptyFamily: Family = {
   id: "no-family-linked",
+  dbId: "no-family-linked",
+  code: "no-family-linked",
   name: "No family linked",
   address: "",
   city: "",
@@ -432,6 +436,8 @@ async function loadPortalData(client: SupabaseClient): Promise<AppState> {
   const familyCode = (familyId: string) => familyCodeById.get(familyId) ?? familyId;
   const appFamilies: Family[] = (families ?? []).map((family: any) => ({
     id: family.family_code ?? family.id,
+    dbId: family.id,
+    code: family.family_code ?? family.id,
     name: family.family_name ?? "Family",
     address: family.address_line1 ?? "",
     city: family.city ?? "",
@@ -447,6 +453,26 @@ async function loadPortalData(client: SupabaseClient): Promise<AppState> {
     status: toRegistrationStatus(family.registration_status),
     registrationPercent: family.registration_percent ?? 0,
   }));
+  const appTuition: TuitionAccount[] = (tuitionAccounts ?? []).map((account: any) => ({
+    familyId: familyCode(account.family_id),
+    annualTuition: account.annual_tuition ?? 0,
+    fees: account.fees ?? 0,
+    transportation: account.transportation ?? 0,
+    registration: account.registration_fee ?? 0,
+    discounts: account.discounts ?? 0,
+    scholarships: account.scholarships ?? 0,
+    credits: account.credits ?? 0,
+    paid: account.paid ?? 0,
+    plan: account.plan_name ?? "Custom arrangement",
+    nextDue: account.next_due_on ?? "",
+    failedPayments: account.failed_payments ?? 0,
+    collectionNotes: Array.isArray(account.collection_notes) ? account.collection_notes : [],
+  }));
+  const tuitionByFamily = new Set(appTuition.map((account) => account.familyId));
+  const completeTuition = [
+    ...appTuition,
+    ...appFamilies.filter((family) => !tuitionByFamily.has(family.id)).map((family) => zeroTuitionAccount(family.id)),
+  ];
 
   return {
     families: appFamilies,
@@ -478,33 +504,22 @@ async function loadPortalData(client: SupabaseClient): Promise<AppState> {
       rejectionReason: doc.rejection_reason ?? undefined,
       staffNote: doc.staff_note ?? undefined,
     })),
-    agreements: (agreements ?? []).map((agreement: any) => {
-      const signature = (signatures ?? []).find((item: any) => item.agreement_id === agreement.id);
-      return {
-        id: agreement.id,
-        familyId: signature ? familyCode(signature.family_id) : appFamilies[0]?.id ?? "",
+    agreements: (agreements ?? []).flatMap((agreement: any) => {
+      const familyTargets = appFamilies.length ? appFamilies : [emptyFamily];
+      return familyTargets.map((family) => {
+        const signature = (signatures ?? []).find((item: any) => item.agreement_id === agreement.id && familyCode(item.family_id) === family.id);
+        return {
+        id: `${agreement.id}:${family.id}`,
+        familyId: family.id,
         title: agreement.title ?? "Agreement",
         status: signature ? "Signed" : "Awaiting Signature",
         version: agreement.version ?? "1.0",
         dateReviewed: signature?.signed_at,
         signer: signature?.signer_name,
       };
+      });
     }),
-    tuition: (tuitionAccounts ?? []).map((account: any) => ({
-      familyId: familyCode(account.family_id),
-      annualTuition: account.annual_tuition ?? 0,
-      fees: account.fees ?? 0,
-      transportation: account.transportation ?? 0,
-      registration: account.registration_fee ?? 0,
-      discounts: account.discounts ?? 0,
-      scholarships: account.scholarships ?? 0,
-      credits: account.credits ?? 0,
-      paid: account.paid ?? 0,
-      plan: account.plan_name ?? "Custom arrangement",
-      nextDue: account.next_due_on ?? "",
-      failedPayments: account.failed_payments ?? 0,
-      collectionNotes: Array.isArray(account.collection_notes) ? account.collection_notes : [],
-    })),
+    tuition: completeTuition,
     messages: (notifications ?? []).map((note: any) => ({
       id: note.id,
       familyId: familyCode(note.family_id ?? ""),
@@ -1028,7 +1043,7 @@ function Portal({ state, setState, role, notify }: { state: AppState; setState: 
       <Route path="/:staffBase/dashboard" element={<AdminDashboard state={state} role={role} />} />
       <Route path="/:staffBase/families" element={<FamiliesTable state={state} setState={setState} currentRole={role} notify={notify} />} />
       <Route path="/:staffBase/families/:familyId" element={<FamilyDetail state={state} />} />
-      <Route path="/:staffBase/students" element={<StudentsTable state={state} />} />
+      <Route path="/:staffBase/students" element={<StudentsTable state={state} setState={setState} currentRole={role} notify={notify} />} />
       <Route path="/:staffBase/students/:studentId" element={<StudentDetail state={state} admin />} />
       <Route path="/:staffBase/registration" element={<RegistrationQueue state={state} setState={setState} currentRole={role} notify={notify} />} />
       <Route path="/:staffBase/documents" element={<Documents state={state} setState={setState} notify={notify} />} />
@@ -1426,13 +1441,58 @@ function AdminDashboard({ state, role }: { state: AppState; role: Role }) {
   const collected = state.tuition.reduce((sum, a) => sum + a.paid, 0);
   const gradeCounts = countBy(state.students, "grade");
   const statusCounts = countBy(state.families, "status");
+  const base = roleBasePath(role);
+  const workQueues = [
+    {
+      title: "Registration applications to review",
+      count: state.families.filter((f) => ["Submitted", "Under Review", "Incomplete", "Interview Required"].includes(f.status)).length,
+      description: "Review submissions, request corrections, and move families through admissions.",
+      to: `${base}/registration`,
+      roles: ["super_admin", "registration_office", "school_management"] as Role[],
+    },
+    {
+      title: "Documents needing review",
+      count: state.documents.filter((d) => ["Uploaded", "Under Review"].includes(d.status)).length,
+      description: "Approve, reject, waive, or request replacement documents.",
+      to: `${base}/documents`,
+      roles: ["super_admin", "registration_office", "school_management"] as Role[],
+    },
+    {
+      title: "Missing parent items",
+      count: state.documents.filter((d) => ["Missing", "Rejected", "Expired", "Not Started"].includes(d.status)).length,
+      description: "Follow up with families before registration deadlines.",
+      to: `${base}/documents`,
+      roles: ["super_admin", "registration_office", "school_management"] as Role[],
+    },
+    {
+      title: "Tuition accounts needing attention",
+      count: state.tuition.filter((a) => a.failedPayments > 0 || total(a) - a.paid > 0).length,
+      description: "Review balances, failed payments, plans, and collection notes.",
+      to: `${base}/tuition`,
+      roles: ["super_admin", "tuition_office", "school_management"] as Role[],
+    },
+  ].filter((item) => item.roles.includes(role));
   return (
     <div className="space-y-6">
       <PageTitle title="Admin Dashboard" subtitle={`Role-aware overview for ${role}.`} />
       <div className="grid gap-4 md:grid-cols-3 xl:grid-cols-5">
-        <Stat label="Total families" value={state.families.length} /><Stat label="Total students" value={state.students.length} /><Stat label="New applications" value={state.students.filter((s) => s.newReturning === "New").length} /><Stat label="In progress" value={state.families.filter((f) => f.status === "In Progress").length} /><Stat label="Awaiting review" value={state.families.filter((f) => f.status === "Under Review").length} />
-        <Stat label="Missing documents" value={state.documents.filter((d) => d.status === "Missing").length} tone="red" /><Stat label="Docs awaiting review" value={state.documents.filter((d) => d.status === "Under Review").length} /><Stat label="Fully enrolled" value={state.students.filter((s) => s.registrationStatus === "Fully Enrolled").length} /><Stat label="Expected tuition" value={currency(expected)} /><Stat label="Collected" value={currency(collected)} />
-        <Stat label="Outstanding" value={currency(expected - collected)} /><Stat label="Overdue balances" value={state.students.filter((s) => s.tuitionStatus === "Overdue").length} tone="red" /><Stat label="Failed payments" value={state.tuition.reduce((sum, a) => sum + a.failedPayments, 0)} tone="red" />
+        <Stat label="Total families" value={state.families.length} to={`${base}/families`} /><Stat label="Total students" value={state.students.length} to={`${base}/students`} /><Stat label="New applications" value={state.students.filter((s) => s.newReturning === "New").length} to={`${base}/registration`} /><Stat label="In progress" value={state.families.filter((f) => f.status === "In Progress").length} to={`${base}/registration`} /><Stat label="Awaiting review" value={state.families.filter((f) => f.status === "Under Review").length} to={`${base}/admissions`} />
+        <Stat label="Missing documents" value={state.documents.filter((d) => d.status === "Missing").length} tone="red" to={`${base}/documents`} /><Stat label="Docs awaiting review" value={state.documents.filter((d) => d.status === "Under Review").length} to={`${base}/documents`} /><Stat label="Fully enrolled" value={state.students.filter((s) => s.registrationStatus === "Fully Enrolled").length} to={`${base}/students`} /><Stat label="Expected tuition" value={currency(expected)} to={`${base}/tuition`} /><Stat label="Collected" value={currency(collected)} to={`${base}/payments`} />
+        <Stat label="Outstanding" value={currency(expected - collected)} to={`${base}/tuition`} /><Stat label="Overdue balances" value={state.students.filter((s) => s.tuitionStatus === "Overdue").length} tone="red" to={`${base}/tuition`} /><Stat label="Failed payments" value={state.tuition.reduce((sum, a) => sum + a.failedPayments, 0)} tone="red" to={`${base}/payments`} />
+      </div>
+      <div className="grid gap-4 lg:grid-cols-2">
+        {workQueues.map((queue) => (
+          <Link key={queue.title} to={queue.to} className="block rounded-3xl border border-slate-200 bg-white p-5 shadow-sm hover:-translate-y-0.5 hover:border-gold hover:shadow-lg focus-visible:bg-ivory">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h3 className="font-bold text-navy">{queue.title}</h3>
+                <p className="mt-2 text-sm text-slate-600">{queue.description}</p>
+              </div>
+              <span className={`rounded-2xl px-4 py-2 text-xl font-bold ${queue.count ? "bg-gold/20 text-burgundy" : "bg-emerald-50 text-emerald-700"}`}>{queue.count}</span>
+            </div>
+            <p className="mt-4 inline-flex items-center gap-2 text-sm font-bold text-burgundy">Open queue <ArrowRight className="h-4 w-4" aria-hidden="true" /></p>
+          </Link>
+        ))}
       </div>
       <div className="grid gap-4 lg:grid-cols-3">
         <MiniChart title="Enrollment by grade" data={gradeCounts} />
@@ -1526,7 +1586,9 @@ function FamiliesTable({ state, setState, currentRole, notify }: { state: AppSta
     if (insertError || !data) return setError(insertError?.message || "Family could not be created.");
 
     const newFamily: Family = {
-      id: data.family_code,
+      id: data.family_code ?? data.id,
+      dbId: data.id,
+      code: data.family_code ?? data.id,
       name: data.family_name,
       address: data.address_line1 ?? "",
       city: data.city ?? "",
@@ -1542,6 +1604,21 @@ function FamiliesTable({ state, setState, currentRole, notify }: { state: AppSta
       status: toRegistrationStatus(data.registration_status),
       registrationPercent: data.registration_percent ?? 0,
     };
+
+    if (currentRole === "super_admin") {
+      await supabase.from("tuition_accounts").insert({
+        family_id: data.id,
+        annual_tuition: 0,
+        fees: 0,
+        transportation: 0,
+        registration_fee: 0,
+        discounts: 0,
+        scholarships: 0,
+        credits: 0,
+        paid: 0,
+        plan_name: "Custom arrangement",
+      });
+    }
 
     setState((current) => ({
       ...current,
@@ -1597,14 +1674,119 @@ function FamiliesTable({ state, setState, currentRole, notify }: { state: AppSta
   );
 }
 
-function StudentsTable({ state }: { state: AppState }) {
+function StudentsTable({ state, setState, currentRole, notify }: { state: AppState; setState: React.Dispatch<React.SetStateAction<AppState>>; currentRole: Role; notify: (message: string) => void }) {
   const [query, setQuery] = useState("");
   const [grade, setGrade] = useState("All");
+  const [showAdd, setShowAdd] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [form, setForm] = useState({
+    familyId: "",
+    legalName: "",
+    preferredName: "",
+    dob: "",
+    gender: "",
+    grade: "",
+    program: "General Studies",
+    newReturning: "New" as Student["newReturning"],
+    transportation: "To be confirmed",
+  });
   const staffBase = `/${useLocation().pathname.split("/")[1] || "admin"}`;
+  const canAddStudent = currentRole === "super_admin" || currentRole === "registration_office";
   const rows = state.students.filter((s) => `${s.preferredName} ${s.legalName} ${s.grade}`.toLowerCase().includes(query.toLowerCase()) && (grade === "All" || s.grade === grade));
+  const selectedFamily = state.families.find((family) => family.id === form.familyId);
+  const updateForm = (field: keyof typeof form, value: string) => setForm((current) => ({ ...current, [field]: value }));
+  const saveStudent = async (event: FormEvent) => {
+    event.preventDefault();
+    setError("");
+    if (!canAddStudent) return setError("Your role cannot create student records.");
+    if (!selectedFamily) return setError("Choose a family before adding a student.");
+    if (!form.legalName.trim()) return setError("Legal name is required.");
+    if (!form.grade.trim()) return setError("Grade is required.");
+    if (!supabase) return setError("Supabase is not configured.");
+
+    setSaving(true);
+    const { data, error: insertError } = await supabase
+      .from("students")
+      .insert({
+        family_id: selectedFamily.dbId ?? selectedFamily.id,
+        legal_name: form.legalName.trim(),
+        preferred_name: form.preferredName.trim() || form.legalName.trim(),
+        date_of_birth: form.dob || null,
+        gender: form.gender.trim() || null,
+        grade: form.grade.trim(),
+        program: form.program.trim(),
+        new_returning: form.newReturning,
+        registration_status: "in_progress",
+        document_status: "missing",
+        tuition_status: "current",
+        transportation: form.transportation.trim(),
+        progress: 0,
+      })
+      .select("id,family_id,legal_name,preferred_name,date_of_birth,gender,grade,program,new_returning,registration_status,document_status,tuition_status,transportation,progress")
+      .single();
+    setSaving(false);
+    if (insertError || !data) return setError(insertError?.message || "Student could not be created.");
+
+    const newStudent: Student = {
+      id: data.id,
+      familyId: selectedFamily.id,
+      preferredName: data.preferred_name ?? data.legal_name,
+      legalName: data.legal_name,
+      dob: data.date_of_birth ?? "",
+      grade: data.grade ?? "",
+      gender: data.gender ?? "",
+      program: data.program ?? "",
+      newReturning: data.new_returning === "Returning" ? "Returning" : "New",
+      registrationStatus: toRegistrationStatus(data.registration_status),
+      documentStatus: toDocStatus(data.document_status),
+      tuitionStatus: toTuitionStatus(data.tuition_status),
+      medicalAlerts: "None",
+      transportation: data.transportation ?? "",
+      progress: data.progress ?? 0,
+    };
+    setState((current) => ({ ...current, students: [newStudent, ...current.students.filter((student) => student.id !== newStudent.id)] }));
+    notify(`${newStudent.legalName} student record created.`);
+    setForm({ familyId: "", legalName: "", preferredName: "", dob: "", gender: "", grade: "", program: "General Studies", newReturning: "New", transportation: "To be confirmed" });
+    setShowAdd(false);
+  };
   return (
     <div className="space-y-6">
       <PageTitle title="Students" subtitle="Student roster with enrollment, medical, transportation, document, and tuition status." />
+      {canAddStudent && (
+        <Card>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h3 className="text-xl font-bold text-navy">Create student record</h3>
+              <p className="mt-1 text-sm text-slate-600">Attach a student to an existing family so registration, documents, and tuition can be tracked together.</p>
+            </div>
+            <button onClick={() => setShowAdd((value) => !value)} className="rounded-xl bg-burgundy px-5 py-3 font-bold text-white hover:bg-burgundy-dark">{showAdd ? "Close" : "Add Student"}</button>
+          </div>
+          {showAdd && (
+            <form onSubmit={saveStudent} className="mt-5 grid gap-4">
+              {error && <p className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm font-semibold text-red-700">{error}</p>}
+              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                <label className="text-sm font-semibold text-slate-700">Family<select className="mt-1 w-full rounded-xl border px-4 py-3" value={form.familyId} onChange={(event) => updateForm("familyId", event.target.value)}>
+                  <option value="">Choose family...</option>
+                  {state.families.map((family) => <option key={family.id} value={family.id}>{family.name} · {family.code ?? family.id}</option>)}
+                </select></label>
+                <label className="text-sm font-semibold text-slate-700">Legal name<input className="mt-1 w-full rounded-xl border px-4 py-3" value={form.legalName} onChange={(event) => updateForm("legalName", event.target.value)} /></label>
+                <label className="text-sm font-semibold text-slate-700">Preferred name<input className="mt-1 w-full rounded-xl border px-4 py-3" value={form.preferredName} onChange={(event) => updateForm("preferredName", event.target.value)} /></label>
+                <label className="text-sm font-semibold text-slate-700">Date of birth<input className="mt-1 w-full rounded-xl border px-4 py-3" type="date" value={form.dob} onChange={(event) => updateForm("dob", event.target.value)} /></label>
+                <label className="text-sm font-semibold text-slate-700">Grade<input className="mt-1 w-full rounded-xl border px-4 py-3" value={form.grade} onChange={(event) => updateForm("grade", event.target.value)} placeholder="Pre-1A" /></label>
+                <label className="text-sm font-semibold text-slate-700">Program<input className="mt-1 w-full rounded-xl border px-4 py-3" value={form.program} onChange={(event) => updateForm("program", event.target.value)} /></label>
+                <label className="text-sm font-semibold text-slate-700">Gender<input className="mt-1 w-full rounded-xl border px-4 py-3" value={form.gender} onChange={(event) => updateForm("gender", event.target.value)} /></label>
+                <label className="text-sm font-semibold text-slate-700">Student type<select className="mt-1 w-full rounded-xl border px-4 py-3" value={form.newReturning} onChange={(event) => updateForm("newReturning", event.target.value)}>
+                  <option>New</option>
+                  <option>Returning</option>
+                </select></label>
+                <label className="text-sm font-semibold text-slate-700">Transportation<input className="mt-1 w-full rounded-xl border px-4 py-3" value={form.transportation} onChange={(event) => updateForm("transportation", event.target.value)} /></label>
+              </div>
+              <button disabled={saving} className="w-fit rounded-xl bg-navy px-5 py-3 font-bold text-white hover:bg-navy/90 disabled:opacity-60">{saving ? "Creating..." : "Create Student"}</button>
+            </form>
+          )}
+        </Card>
+      )}
       <SearchBar query={query} setQuery={setQuery} />
       <FilterBar value={grade} setValue={setGrade} options={["All", ...Array.from(new Set(state.students.map((s) => s.grade)))]} />
       <Table headers={["Student", "Family", "Grade", "Program", "Registration", "Documents", "Tuition", ""]}>

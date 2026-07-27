@@ -21,10 +21,10 @@ This application is now positioned as a production school operations portal, not
 
 ## Phase 2 — Real database-backed family operations
 
-- Replace remaining demo family/student/document/tuition state with Supabase reads and writes.
+- Replace remaining demo family/student/document/tuition state with Supabase reads and writes. *(In progress: loader now normalizes Supabase families, students, documents, agreements, tuition accounts, and notifications.)*
 - Add linked parent-family selection for parent accounts.
-- Add create/edit/archive flows for families.
-- Add create/edit student profiles.
+- Add create/edit/archive flows for families. *(Started: staff can create family records from the portal.)*
+- Add create/edit student profiles. *(Started: Registration Office and Super Admin can create student records from the portal.)*
 - Add audit logs for family/student changes.
 - Add duplicate checking for emails, family codes, and student records.
 
