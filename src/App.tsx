@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import type { FormEvent, ReactNode } from "react";
+import { Component, useEffect, useMemo, useState } from "react";
+import type { ErrorInfo, FormEvent, ReactNode } from "react";
 import type { Session, SupabaseClient } from "@supabase/supabase-js";
 import {
   BrowserRouter,
@@ -155,6 +155,38 @@ type AppState = {
 };
 
 type NavItem = { label: string; path: string; icon: LucideIcon };
+
+class AppErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean }> {
+  state = { hasError: false };
+
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error("Portal screen failed", error, info);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <main className="grid min-h-screen place-items-center bg-ivory px-6">
+          <Card className="max-w-xl text-center">
+            <div className="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-red-50 text-red-700">
+              <AlertCircle aria-hidden="true" />
+            </div>
+            <h1 className="mt-4 text-2xl font-bold text-navy">Something needs a quick refresh</h1>
+            <p className="mt-2 text-slate-600">The portal hit a screen error, but your account is safe. Refresh the page and continue where you left off.</p>
+            <button className="mt-5 rounded-xl bg-navy px-5 py-3 font-bold text-white hover:bg-burgundy" onClick={() => window.location.reload()}>
+              Refresh portal
+            </button>
+          </Card>
+        </main>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 const roleLabels: Record<Role, string> = {
   parent: "Parent Portal",
@@ -576,23 +608,25 @@ function App() {
   };
 
   return (
-    <BrowserRouter>
-      {toast && <div className="fixed right-4 top-4 z-50 rounded-xl bg-navy px-4 py-3 text-sm font-semibold text-white shadow-2xl">{toast}</div>}
-      <Routes>
-        <Route path="/login" element={<Login session={session} profile={profile} authMessage={authMessage} />} />
-        <Route path="/reset-password" element={<ResetPassword />} />
-        <Route path="/accept-invitation" element={<ResetPassword invitation />} />
-        <Route path="/" element={<Navigate to={profile ? defaultRouteForRole(profile.role) : "/login"} replace />} />
-        <Route
-          path="/*"
-          element={
-            authLoading ? <LoadingScreen /> : profile ? (
-              <ProtectedPortal profile={profile} state={state} setState={setState} notify={notify} />
-            ) : <Navigate to="/login" replace />
-          }
-        />
-      </Routes>
-    </BrowserRouter>
+    <AppErrorBoundary>
+      <BrowserRouter>
+        {toast && <div className="fixed right-4 top-4 z-50 rounded-xl bg-navy px-4 py-3 text-sm font-semibold text-white shadow-2xl" role="status" aria-live="polite">{toast}</div>}
+        <Routes>
+          <Route path="/login" element={<Login session={session} profile={profile} authMessage={authMessage} />} />
+          <Route path="/reset-password" element={<ResetPassword />} />
+          <Route path="/accept-invitation" element={<ResetPassword invitation />} />
+          <Route path="/" element={<Navigate to={profile ? defaultRouteForRole(profile.role) : "/login"} replace />} />
+          <Route
+            path="/*"
+            element={
+              authLoading ? <LoadingScreen /> : profile ? (
+                <ProtectedPortal profile={profile} state={state} setState={setState} notify={notify} />
+              ) : <Navigate to="/login" replace />
+            }
+          />
+        </Routes>
+      </BrowserRouter>
+    </AppErrorBoundary>
   );
 }
 
@@ -824,7 +858,9 @@ function Shell({ profile, children }: { profile: Profile; children: ReactNode })
   const role = profile.role;
   const nav = role === "parent" ? parentNav : adminNav(role);
   const navigate = useNavigate();
+  const location = useLocation();
   const userName = [profile.first_name, profile.last_name].filter(Boolean).join(" ") || profile.email;
+  const currentSection = nav.find((item) => location.pathname === item.path || location.pathname.startsWith(`${item.path}/`))?.label ?? "Portal";
   return (
     <div className="min-h-screen bg-ivory text-slate-900">
       <button className="fixed left-4 top-4 z-40 rounded-xl bg-navy p-3 text-white shadow-lg lg:hidden" onClick={() => setOpen(true)} aria-label="Open navigation">
@@ -843,12 +879,21 @@ function Shell({ profile, children }: { profile: Profile; children: ReactNode })
           </Link>
           <button className="rounded-lg p-1 hover:bg-ivory lg:hidden" onClick={() => setOpen(false)} aria-label="Close navigation"><X aria-hidden="true" /></button>
         </div>
-        <nav className="mt-8 space-y-1">
-          {nav.map((item) => (
-            <Link key={item.path} to={item.path} onClick={() => setOpen(false)} className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-semibold text-slate-700 hover:bg-ivory hover:text-navy focus-visible:bg-ivory focus-visible:text-navy">
-              <item.icon className="h-4 w-4" aria-hidden="true" /> {item.label}
-            </Link>
-          ))}
+        <nav className="mt-8 space-y-1" aria-label="Main navigation">
+          {nav.map((item) => {
+            const active = location.pathname === item.path || location.pathname.startsWith(`${item.path}/`);
+            return (
+              <Link
+                key={item.path}
+                to={item.path}
+                onClick={() => setOpen(false)}
+                aria-current={active ? "page" : undefined}
+                className={`flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-semibold hover:bg-ivory hover:text-navy focus-visible:bg-ivory focus-visible:text-navy ${active ? "bg-ivory text-burgundy shadow-sm" : "text-slate-700"}`}
+              >
+                <item.icon className="h-4 w-4" aria-hidden="true" /> {item.label}
+              </Link>
+            );
+          })}
         </nav>
         <button
           className="absolute bottom-5 left-5 right-5 flex items-center justify-center gap-2 rounded-xl border border-slate-200 px-4 py-3 font-semibold text-slate-600 hover:bg-ivory"
@@ -868,9 +913,13 @@ function Shell({ profile, children }: { profile: Profile; children: ReactNode })
               <div className="min-w-0">
                 <p className="text-xs font-bold uppercase tracking-[0.2em] text-gold-dark">Private School Operations</p>
                 <h1 className="text-lg font-bold text-burgundy sm:text-xl">Registration & Tuition Management</h1>
+                <p className="mt-1 text-xs font-semibold text-slate-500">{currentSection}</p>
               </div>
             </div>
             <div className="flex items-center gap-2">
+              <span className={`hidden rounded-full px-3 py-1 text-xs font-bold sm:inline-flex ${isSupabaseConfigured ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700"}`}>
+                {isSupabaseConfigured ? "Secure live portal" : "Supabase not configured"}
+              </span>
               <label className="sr-only" htmlFor="language-select">Language</label>
               <select id="language-select" className="rounded-full border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-navy shadow-sm" aria-label="Language selector">
                 <option>English</option>
@@ -975,7 +1024,7 @@ function Portal({ state, setState, role, notify }: { state: AppState; setState: 
       <Route path="/parent/tuition" element={<Tuition state={state} setState={setState} familyId={routeFamily.id} notify={notify} parent />} />
       <Route path="/parent/payments" element={<Payments state={state} familyId={routeFamily.id} />} />
       <Route path="/parent/messages" element={<Messages state={state} familyId={routeFamily.id} notify={notify} />} />
-      <Route path="/parent/settings" element={<SimplePage title="Account Settings" description="Update profile preferences, notification channels, and account contact defaults." />} />
+      <Route path="/parent/settings" element={<AccountSettings notify={notify} />} />
       <Route path="/:staffBase/dashboard" element={<AdminDashboard state={state} role={role} />} />
       <Route path="/:staffBase/families" element={<FamiliesTable state={state} setState={setState} currentRole={role} notify={notify} />} />
       <Route path="/:staffBase/families/:familyId" element={<FamilyDetail state={state} />} />
@@ -989,7 +1038,7 @@ function Portal({ state, setState, role, notify }: { state: AppState; setState: 
       <Route path="/:staffBase/reports" element={<Reports state={state} notify={notify} />} />
       <Route path="/:staffBase/messages" element={<Messages state={state} notify={notify} />} />
       <Route path="/:staffBase/users" element={<UsersAccess currentRole={role} notify={notify} />} />
-      <Route path="/:staffBase/settings" element={<SimplePage title="School Settings" description="Manage academic year labels, document requirements, tuition defaults, and secure Supabase settings." />} />
+      <Route path="/:staffBase/settings" element={<SchoolSettings role={role} notify={notify} />} />
       <Route path="*" element={<Navigate to={defaultRouteForRole(role)} replace />} />
     </Routes>
   );
@@ -1653,6 +1702,106 @@ function Reports({ state, notify }: { state: AppState; notify: (message: string)
 function Messages({ state, familyId, notify }: { state: AppState; familyId?: string; notify: (message: string) => void }) {
   const messages = state.messages.filter((m) => !familyId || m.familyId === familyId);
   return <div className="space-y-6"><PageTitle title="Messages" subtitle="Recent school communication and office notes." />{messages.map((m) => <Card key={m.id}><p className="font-bold text-navy">{m.subject}</p><p className="text-sm text-slate-500">{formatDate(m.date)} · {m.familyId}</p><p className="mt-2 text-slate-600">{m.body}</p><button className="mt-4 rounded-xl border px-4 py-2 font-semibold hover:bg-ivory" onClick={() => notify("Reply draft saved.")}>Reply</button></Card>)}{!messages.length && <Empty />}</div>;
+}
+
+function AccountSettings({ notify }: { notify: (message: string) => void }) {
+  const [emailNotifications, setEmailNotifications] = useState(true);
+  const [textNotifications, setTextNotifications] = useState(false);
+  const [language, setLanguage] = useState("English");
+  return (
+    <div className="space-y-6">
+      <PageTitle title="Account Settings" subtitle="Manage communication preferences, password access, language readiness, and parent notification defaults." />
+      <div className="grid gap-4 lg:grid-cols-3">
+        <Card>
+          <h3 className="text-lg font-bold text-navy">Communication</h3>
+          <div className="mt-4 space-y-3">
+            <ToggleRow label="Email notifications" description="Registration, documents, tuition, and school messages." checked={emailNotifications} onChange={setEmailNotifications} />
+            <ToggleRow label="Text message alerts" description="Urgent missing items and office reminders." checked={textNotifications} onChange={setTextNotifications} />
+          </div>
+        </Card>
+        <Card>
+          <h3 className="text-lg font-bold text-navy">Language</h3>
+          <label className="mt-4 block text-sm font-semibold text-slate-700">
+            Preferred portal language
+            <select className="mt-1 w-full rounded-xl border px-4 py-3" value={language} onChange={(event) => setLanguage(event.target.value)}>
+              <option>English</option>
+              <option>Yiddish</option>
+            </select>
+          </label>
+          <p className="mt-3 text-sm text-slate-600">Full translation and RTL layout are planned; this stores the user preference structure now.</p>
+        </Card>
+        <Card>
+          <h3 className="text-lg font-bold text-navy">Security</h3>
+          <p className="mt-3 text-sm text-slate-600">Use password reset if your account was invited or you need a new password.</p>
+          <Link to="/reset-password" className="mt-4 inline-flex rounded-xl bg-navy px-4 py-2 font-bold text-white hover:bg-burgundy">Change password</Link>
+        </Card>
+      </div>
+      <button className="rounded-xl bg-burgundy px-5 py-3 font-bold text-white hover:bg-burgundy-dark" onClick={() => notify("Account preferences saved for this session.")}>Save preferences</button>
+    </div>
+  );
+}
+
+function SchoolSettings({ role, notify }: { role: Role; notify: (message: string) => void }) {
+  const readOnly = role === "school_management";
+  const settingsGroups = [
+    {
+      title: "Academic year",
+      description: "Current year label, registration open dates, grade progression, and enrollment caps.",
+      items: ["School Year 2026–2027 / תשפ״ז", "Registration season: Open", "Default grade progression enabled"],
+    },
+    {
+      title: "Document requirements",
+      description: "Birth certificates, immunization forms, medical consents, handbook acknowledgments, and waiver rules.",
+      items: ["Birth certificate required", "Medical consent required", "Parent handbook review required"],
+    },
+    {
+      title: "Tuition defaults",
+      description: "Payment plans, registration fees, discounts, scholarship tracking, and overdue reminders.",
+      items: ["10 monthly payments", "Upcoming payment reminders enabled", "Scholarship review workflow enabled"],
+    },
+    {
+      title: "Security & access",
+      description: "Role permissions, invitation policy, disabled-account handling, and private document storage.",
+      items: ["Super Admin controls staff roles", "Registration Office may invite parents", "Documents remain private"],
+    },
+  ];
+  return (
+    <div className="space-y-6">
+      <PageTitle title="School Settings" subtitle="A central control room for the school year, requirements, tuition defaults, permissions, and parent-facing portal behavior." />
+      {readOnly && <p className="rounded-xl border border-gold/40 bg-gold/10 p-3 text-sm font-semibold text-navy">School Management has read-only access to settings. Super Admin can make changes.</p>}
+      <div className="grid gap-4 md:grid-cols-2">
+        {settingsGroups.map((group) => (
+          <Card key={group.title}>
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h3 className="text-lg font-bold text-navy">{group.title}</h3>
+                <p className="mt-2 text-sm text-slate-600">{group.description}</p>
+              </div>
+              <StatusBadge status={readOnly ? "Read-only" : "Ready"} />
+            </div>
+            <ul className="mt-4 space-y-2 text-sm text-slate-700">
+              {group.items.map((item) => <li key={item} className="flex gap-2"><CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" aria-hidden="true" />{item}</li>)}
+            </ul>
+            <button disabled={readOnly} className="mt-5 rounded-xl border border-slate-200 px-4 py-2 font-bold text-navy hover:bg-ivory disabled:opacity-50" onClick={() => notify(`${group.title} settings saved for this session.`)}>
+              Configure
+            </button>
+          </Card>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ToggleRow({ label, description, checked, onChange }: { label: string; description: string; checked: boolean; onChange: (value: boolean) => void }) {
+  return (
+    <label className="flex cursor-pointer items-start justify-between gap-4 rounded-2xl border border-slate-200 p-3 hover:bg-ivory">
+      <span>
+        <span className="block font-bold text-navy">{label}</span>
+        <span className="mt-1 block text-sm text-slate-600">{description}</span>
+      </span>
+      <input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} className="mt-1 h-5 w-5 accent-burgundy" />
+    </label>
+  );
 }
 
 function SimplePage({ title, description }: { title: string; description: string }) {
