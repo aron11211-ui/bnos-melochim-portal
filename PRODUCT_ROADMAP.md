@@ -30,8 +30,8 @@ This application is now positioned as a production school operations portal, not
 
 ## Phase 3 — Registration workflow
 
-- Store each registration section separately.
-- Add autosave, section validation, and completion tracking.
+- Store each registration section separately. *(Started: wizard saves section snapshots into `registration_steps`.)*
+- Add autosave, section validation, and completion tracking. *(Started: wizard creates/updates `registrations` progress, completed sections, remaining items, and submitted state.)*
 - Support multiple students in one family registration.
 - Add staff review notes, internal-only flags, and request-correction flows.
 - Add final submission and admissions-review handoff.

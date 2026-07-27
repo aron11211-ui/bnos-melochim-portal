@@ -422,8 +422,9 @@ function upcomingPayment(account: TuitionAccount) {
 }
 
 async function loadPortalData(client: SupabaseClient): Promise<AppState> {
-  const [{ data: families }, { data: students }, { data: documents }, { data: agreements }, { data: signatures }, { data: tuitionAccounts }, { data: notifications }] = await Promise.all([
+  const [{ data: families }, { data: registrations }, { data: students }, { data: documents }, { data: agreements }, { data: signatures }, { data: tuitionAccounts }, { data: notifications }] = await Promise.all([
     client.from("families").select("*").order("family_code"),
+    client.from("registrations").select("*").order("updated_at", { ascending: false }),
     client.from("students").select("*").order("legal_name"),
     client.from("student_documents").select("*"),
     client.from("agreements").select("*").eq("active", true),
@@ -434,6 +435,7 @@ async function loadPortalData(client: SupabaseClient): Promise<AppState> {
 
   const familyCodeById = new Map((families ?? []).map((family: any) => [family.id, family.family_code ?? family.id]));
   const familyCode = (familyId: string) => familyCodeById.get(familyId) ?? familyId;
+  const registrationByFamilyId = new Map((registrations ?? []).map((registration: any) => [registration.family_id, registration]));
   const appFamilies: Family[] = (families ?? []).map((family: any) => ({
     id: family.family_code ?? family.id,
     dbId: family.id,
@@ -450,8 +452,8 @@ async function loadPortalData(client: SupabaseClient): Promise<AppState> {
     maternalGrandparents: family.maternal_grandparents ?? "",
     paternalGrandparents: family.paternal_grandparents ?? "",
     parents: Array.isArray(family.guardians) ? family.guardians : [],
-    status: toRegistrationStatus(family.registration_status),
-    registrationPercent: family.registration_percent ?? 0,
+    status: toRegistrationStatus(registrationByFamilyId.get(family.id)?.status ?? family.registration_status),
+    registrationPercent: registrationByFamilyId.get(family.id)?.percent_complete ?? family.registration_percent ?? 0,
   }));
   const appTuition: TuitionAccount[] = (tuitionAccounts ?? []).map((account: any) => ({
     familyId: familyCode(account.family_id),
@@ -1279,29 +1281,126 @@ function Children({ state, familyId }: { state: AppState; familyId: string }) {
 }
 
 function RegistrationWizard({ state, setState, family, notify }: { state: AppState; setState: React.Dispatch<React.SetStateAction<AppState>>; family: Family; notify: (message: string) => void }) {
-  const steps = ["Welcome", "Family information", "Parents/guardians", "Review children", "Student information", "Emergency/medical", "Transportation", "Government eligibility", "Policies", "Tuition review", "Payment plan", "Final checklist"];
+  const steps = [
+    { key: "welcome", title: "Welcome" },
+    { key: "family_information", title: "Family information" },
+    { key: "parents_guardians", title: "Parents/guardians" },
+    { key: "review_children", title: "Review children" },
+    { key: "student_information", title: "Student information" },
+    { key: "emergency_medical", title: "Emergency/medical" },
+    { key: "transportation", title: "Transportation" },
+    { key: "government_eligibility", title: "Government eligibility" },
+    { key: "policies", title: "Policies" },
+    { key: "tuition_review", title: "Tuition review" },
+    { key: "payment_plan", title: "Payment plan" },
+    { key: "final_checklist", title: "Final checklist" },
+  ];
   const [step, setStep] = useState(0);
   const [error, setError] = useState("");
-  const save = (exit = false) => {
+  const [saving, setSaving] = useState(false);
+  const currentStep = steps[step];
+  const save = async (exit = false) => {
     if (step === 1 && !family.email) return setError("Primary email is required before continuing.");
+    if (!supabase) return setError("Supabase is not configured, so registration cannot be saved yet.");
+    const familyDbId = family.dbId ?? family.id;
+    if (!familyDbId || familyDbId === "no-family-linked") return setError("This account is not linked to a family record yet.");
     setError("");
     const progress = Math.max(family.registrationPercent, Math.round(((step + 1) / steps.length) * 100));
+    const status = progress >= 100 ? "submitted" : "in_progress";
+    const completedSections = Math.max(step + 1, Math.round((progress / 100) * steps.length));
+    const remainingItems = Math.max(steps.length - completedSections, 0);
+
+    setSaving(true);
+    const { data: existingRegistration, error: lookupError } = await supabase
+      .from("registrations")
+      .select("id")
+      .eq("family_id", familyDbId)
+      .order("updated_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (lookupError) {
+      setSaving(false);
+      return setError("Registration record could not be checked. Please try again.");
+    }
+
+    const registrationPayload = {
+      family_id: familyDbId,
+      status,
+      percent_complete: progress,
+      completed_sections: completedSections,
+      remaining_items: remainingItems,
+      submitted_at: progress >= 100 ? new Date().toISOString() : null,
+    };
+
+    const registrationResult = existingRegistration?.id
+      ? await supabase.from("registrations").update(registrationPayload).eq("id", existingRegistration.id).select("id").single()
+      : await supabase.from("registrations").insert(registrationPayload).select("id").single();
+
+    if (registrationResult.error || !registrationResult.data) {
+      setSaving(false);
+      return setError(registrationResult.error?.message || "Registration progress could not be saved.");
+    }
+
+    const familyStudents = state.students.filter((s) => s.familyId === family.id);
+    const account = state.tuition.find((item) => item.familyId === family.id);
+    const stepData = {
+      saved_at: new Date().toISOString(),
+      saved_from: "parent_portal",
+      family: {
+        id: family.id,
+        db_id: familyDbId,
+        name: family.name,
+        email: family.email,
+        phone: family.phone,
+        address: [family.address, family.city, family.state, family.zip].filter(Boolean).join(", "),
+      },
+      students: familyStudents.map((student) => ({
+        id: student.id,
+        legal_name: student.legalName,
+        preferred_name: student.preferredName,
+        grade: student.grade,
+        registration_status: student.registrationStatus,
+        transportation: student.transportation,
+      })),
+      documents: state.documents.filter((doc) => doc.familyId === family.id).map((doc) => ({ id: doc.id, type: doc.type, status: doc.status })),
+      tuition: account ? { plan: account.plan, balance: total(account) - account.paid, next_due: account.nextDue } : null,
+    };
+
+    const { error: stepError } = await supabase.from("registration_steps").upsert(
+      {
+        registration_id: registrationResult.data.id,
+        step_key: currentStep.key,
+        title: currentStep.title,
+        status: "completed",
+        completed_at: new Date().toISOString(),
+        data: stepData,
+      },
+      { onConflict: "registration_id,step_key" },
+    );
+
+    if (stepError) {
+      setSaving(false);
+      return setError(stepError.message || "Registration section could not be saved.");
+    }
+
     setState({ ...state, families: state.families.map((f) => (f.id === family.id ? { ...f, registrationPercent: progress, status: progress >= 100 ? "Submitted" : "In Progress" } : f)) });
-    notify(exit ? "Registration autosaved. You can return anytime." : "Registration step saved.");
+    setSaving(false);
+    notify(exit ? "Registration section saved to Supabase. You can return anytime." : "Registration section saved to Supabase.");
     if (!exit && step < steps.length - 1) setStep(step + 1);
   };
   return (
     <div className="space-y-6">
       <PageTitle title="Registration Wizard" subtitle="Your progress is saved as you move through the form, and shared family information is reused across all children." />
       <Card>
-        <div className="flex items-center justify-between"><p className="font-bold text-navy">Step {step + 1} of {steps.length}: {steps[step]}</p><StatusBadge status={step < 4 ? "Family shared" : "Multi-child aware"} /></div>
+        <div className="flex items-center justify-between"><p className="font-bold text-navy">Step {step + 1} of {steps.length}: {currentStep.title}</p><StatusBadge status={saving ? "Saving" : step < 4 ? "Family shared" : "Multi-child aware"} /></div>
         <div className="mt-4"><Progress value={((step + 1) / steps.length) * 100} /></div>
         <div className="mt-4 flex flex-wrap gap-2">
-          {steps.map((label, index) => <span key={label} className={`rounded-full px-3 py-1 text-xs font-bold ${index < step ? "bg-emerald-50 text-emerald-700" : index === step ? "bg-gold/20 text-gold-dark" : "bg-slate-100 text-slate-500"}`}>{index < step ? "✓ " : ""}{index + 1}</span>)}
+          {steps.map((item, index) => <span key={item.key} className={`rounded-full px-3 py-1 text-xs font-bold ${index < step ? "bg-emerald-50 text-emerald-700" : index === step ? "bg-gold/20 text-gold-dark" : "bg-slate-100 text-slate-500"}`}>{index < step ? "✓ " : ""}{index + 1}</span>)}
         </div>
       </Card>
       <Card>
-        <h3 className="text-2xl font-bold text-navy">{steps[step]}</h3>
+        <h3 className="text-2xl font-bold text-navy">{currentStep.title}</h3>
         <p className="mt-3 text-slate-600">
           {step === 0 && "Welcome. The office uses this guided workflow to gather all family, student, medical, policy, and tuition information."}
           {step === 1 && `Confirm household details for the ${family.name} family: ${family.address}, ${family.city}, ${family.state} ${family.zip}.`}
@@ -1312,9 +1411,9 @@ function RegistrationWizard({ state, setState, family, notify }: { state: AppSta
         {error && <p className="mt-4 rounded-xl bg-red-50 p-3 text-sm font-semibold text-red-700">{error}</p>}
       </Card>
       <div className="flex flex-wrap gap-3">
-        <button className="rounded-xl border border-slate-300 px-4 py-2 font-semibold" disabled={step === 0} onClick={() => setStep(step - 1)}><ChevronLeft className="inline h-4 w-4" /> Back</button>
-        <button className="rounded-xl bg-navy px-4 py-2 font-semibold text-white" onClick={() => save(false)}>{step === steps.length - 1 ? "Submit Registration" : "Save and Continue"}</button>
-        <button className="rounded-xl border border-gold px-4 py-2 font-semibold text-gold-dark" onClick={() => save(true)}>Save and Exit</button>
+        <button className="rounded-xl border border-slate-300 px-4 py-2 font-semibold" disabled={saving || step === 0} onClick={() => setStep(step - 1)}><ChevronLeft className="inline h-4 w-4" /> Back</button>
+        <button disabled={saving} className="rounded-xl bg-navy px-4 py-2 font-semibold text-white disabled:opacity-60" onClick={() => void save(false)}>{saving ? "Saving..." : step === steps.length - 1 ? "Submit Registration" : "Save and Continue"}</button>
+        <button disabled={saving} className="rounded-xl border border-gold px-4 py-2 font-semibold text-gold-dark disabled:opacity-60" onClick={() => void save(true)}>Save and Exit</button>
       </div>
     </div>
   );
