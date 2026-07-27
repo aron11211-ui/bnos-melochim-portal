@@ -3,7 +3,7 @@
 ## Critical next work
 
 - Fully retest invitation acceptance and password setup using fresh Parent, Registration Office, Tuition Office, School Management, and System Administration accounts.
-- Tie Parent Portal data loading to `family_users` for the logged-in user instead of relying on the first available family.
+- Live-test Parent Portal family scoping with two separate parent accounts after creating active family links.
 - Make each registration wizard step a real editable form with validation.
 - Persist parent family-profile edits to Supabase.
 - Persist document review actions to Supabase.

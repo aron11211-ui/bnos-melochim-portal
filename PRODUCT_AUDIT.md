@@ -28,7 +28,7 @@ Last updated: July 27, 2026
 
 - Important buttons still display simulated success messages instead of completing a database-backed workflow.
 - Local fallback `demoState` remains in the production bundle and can mask missing Supabase data.
-- Parent family selection currently defaults to the first loaded family; it must be tied to the logged-in user's `family_users` relationship.
+- Parent family selection no longer defaults to the first loaded family; parent data loading is now scoped through active `family_users` relationships. This still needs two-parent live verification.
 - User invitation/password setup has had reliability problems and needs full end-to-end retesting with fresh accounts.
 - Direct route refresh depends on Render SPA rewrite being correct.
 - Mobile tables still rely heavily on horizontal scrolling instead of true mobile cards.
@@ -46,7 +46,7 @@ Last updated: July 27, 2026
 
 ## Security risks to continue reviewing
 
-- Verify parent access is filtered by actual family linkage, not loaded app state.
+- Verify parent access is filtered by actual family linkage, not loaded app state. *(Code-level fix added; live two-parent verification still required.)*
 - Verify Tuition Office cannot access confidential medical documents.
 - Verify disabled accounts cannot continue using stale sessions.
 - Verify storage object policies with real uploads.

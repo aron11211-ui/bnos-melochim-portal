@@ -429,16 +429,40 @@ function upcomingPayment(account: TuitionAccount) {
   return `${currency(Math.ceil(remaining / divisor))} due ${formatDate(account.nextDue)}`;
 }
 
-async function loadPortalData(client: SupabaseClient): Promise<AppState> {
+function emptyPortalState(): AppState {
+  return { families: [], students: [], documents: [], agreements: [], tuition: [], messages: [] };
+}
+
+async function loadPortalData(client: SupabaseClient, profile: Profile): Promise<AppState> {
+  const familyFilter =
+    profile.role === "parent"
+      ? await client
+          .from("family_users")
+          .select("family_id")
+          .eq("user_id", profile.id)
+          .eq("status", "active")
+      : null;
+  const parentFamilyIds = profile.role === "parent" ? (familyFilter?.data ?? []).map((row: any) => row.family_id).filter(Boolean) : [];
+
+  if (profile.role === "parent" && !parentFamilyIds.length) return emptyPortalState();
+
+  const familiesQuery = client.from("families").select("*").order("family_code");
+  const registrationsQuery = client.from("registrations").select("*").order("updated_at", { ascending: false });
+  const studentsQuery = client.from("students").select("*").order("legal_name");
+  const documentsQuery = client.from("student_documents").select("*");
+  const signaturesQuery = client.from("agreement_signatures").select("*");
+  const tuitionQuery = client.from("tuition_accounts").select("*");
+  const notificationsQuery = client.from("notifications").select("*").order("created_at", { ascending: false });
+
   const [{ data: families }, { data: registrations }, { data: students }, { data: documents }, { data: agreements }, { data: signatures }, { data: tuitionAccounts }, { data: notifications }] = await Promise.all([
-    client.from("families").select("*").order("family_code"),
-    client.from("registrations").select("*").order("updated_at", { ascending: false }),
-    client.from("students").select("*").order("legal_name"),
-    client.from("student_documents").select("*"),
+    parentFamilyIds.length ? familiesQuery.in("id", parentFamilyIds) : familiesQuery,
+    parentFamilyIds.length ? registrationsQuery.in("family_id", parentFamilyIds) : registrationsQuery,
+    parentFamilyIds.length ? studentsQuery.in("family_id", parentFamilyIds) : studentsQuery,
+    parentFamilyIds.length ? documentsQuery.in("family_id", parentFamilyIds) : documentsQuery,
     client.from("agreements").select("*").eq("active", true),
-    client.from("agreement_signatures").select("*"),
-    client.from("tuition_accounts").select("*"),
-    client.from("notifications").select("*").order("created_at", { ascending: false }),
+    parentFamilyIds.length ? signaturesQuery.in("family_id", parentFamilyIds) : signaturesQuery,
+    parentFamilyIds.length ? tuitionQuery.in("family_id", parentFamilyIds) : tuitionQuery,
+    parentFamilyIds.length ? notificationsQuery.in("family_id", parentFamilyIds) : notificationsQuery,
   ]);
 
   const familyCodeById = new Map((families ?? []).map((family: any) => [family.id, family.family_code ?? family.id]));
@@ -613,8 +637,9 @@ function App() {
         setProfile(null);
         setAuthMessage(data.status === "disabled" ? "This account is disabled. Please contact the school office." : "This account is not active yet. Please verify your email or contact the school office.");
       } else {
-        setProfile(data as Profile);
-        setState(await loadPortalData(client));
+        const activeProfile = data as Profile;
+        setProfile(activeProfile);
+        setState(await loadPortalData(client, activeProfile));
         setAuthMessage(null);
       }
       setAuthLoading(false);
@@ -842,7 +867,12 @@ function ResetPassword({ invitation = false }: { invitation?: boolean }) {
     else {
       if (invitation) {
         const { data } = await supabase.auth.getUser();
-        if (data.user) await supabase.from("profiles").update({ status: "active" }).eq("id", data.user.id);
+        if (data.user) {
+          await Promise.all([
+            supabase.from("profiles").update({ status: "active" }).eq("id", data.user.id),
+            supabase.from("family_users").update({ status: "active" }).eq("user_id", data.user.id).eq("status", "invited"),
+          ]);
+        }
       }
       setMessage("Password updated. You can now sign in.");
       window.setTimeout(() => navigate("/login", { replace: true }), 1200);

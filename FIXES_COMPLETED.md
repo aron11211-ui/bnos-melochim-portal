@@ -13,6 +13,8 @@
 - Added secure invitation Edge Function using server-side service role only.
 - Added access-management Edge Function using server-side service role only.
 - Added parent registration insert policies for own-family registration rows.
+- Scoped Parent Portal data loading to active `family_users` links.
+- Added invitation-acceptance activation for the invited parent-family link.
 
 ## Product workflows
 

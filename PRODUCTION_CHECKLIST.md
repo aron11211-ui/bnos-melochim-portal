@@ -16,6 +16,7 @@
 - [x] RLS enabled on sensitive tables.
 - [x] Private storage buckets configured.
 - [ ] Parent-family access tested with two separate parent accounts.
+- [x] Parent portal data loader scoped to active `family_users` links.
 - [ ] Tuition Office confidential-medical restriction tested.
 - [ ] Disabled account stale-session behavior tested.
 - [ ] Storage signed URL behavior tested.
