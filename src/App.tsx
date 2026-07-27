@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import type { Session, SupabaseClient } from "@supabase/supabase-js";
 import {
@@ -881,7 +881,7 @@ function isAuthorizedPath(role: Role, path: string) {
   const section = path.split("/")[2] || "dashboard";
   const allowedSections: Record<Exclude<Role, "super_admin">, string[]> = {
     parent: ["dashboard", "family", "children", "registration", "documents", "agreements", "tuition", "payments", "messages", "settings"],
-    registration_office: ["dashboard", "families", "students", "registration", "documents", "admissions", "reports", "messages", "settings"],
+    registration_office: ["dashboard", "families", "students", "registration", "documents", "admissions", "reports", "messages", "users", "settings"],
     tuition_office: ["dashboard", "families", "students", "tuition", "payments", "reports", "messages"],
     school_management: ["dashboard", "families", "students", "registration", "documents", "admissions", "tuition", "payments", "reports", "messages"],
   };
@@ -906,7 +906,7 @@ function adminNav(role: Role) {
   ];
   const allowed =
     role === "registration_office"
-      ? all.filter(({ label }) => !["Payments", "Tuition", "Users & Access"].includes(label))
+      ? all.filter(({ label }) => !["Payments", "Tuition"].includes(label))
       : role === "tuition_office"
         ? all.filter(({ label }) => ["Dashboard", "Families", "Students", "Tuition", "Payments", "Reports", "Messages"].includes(label))
         : role === "school_management"
@@ -946,7 +946,7 @@ function Portal({ state, setState, role, notify }: { state: AppState; setState: 
       <Route path="/:staffBase/payments" element={<Payments state={state} />} />
       <Route path="/:staffBase/reports" element={<Reports state={state} notify={notify} />} />
       <Route path="/:staffBase/messages" element={<Messages state={state} notify={notify} />} />
-      <Route path="/admin/users" element={<UsersAccess notify={notify} />} />
+      <Route path="/:staffBase/users" element={<UsersAccess currentRole={role} notify={notify} />} />
       <Route path="/:staffBase/settings" element={<SimplePage title="School Settings" description="Manage academic year labels, document requirements, tuition defaults, and secure Supabase settings." />} />
       <Route path="*" element={<Navigate to={defaultRouteForRole(role)} replace />} />
     </Routes>
@@ -1488,21 +1488,149 @@ function SimplePage({ title, description }: { title: string; description: string
   return <div className="space-y-6"><PageTitle title={title} subtitle={description} /><Card><p className="text-slate-600">This section is available for school configuration and future workflow settings.</p></Card></div>;
 }
 
-function UsersAccess({ notify }: { notify: (message: string) => void }) {
+type AccessUser = {
+  id: string;
+  email: string;
+  first_name: string;
+  last_name: string;
+  role: Role;
+  status: string;
+  created_at: string;
+};
+
+type FamilyOption = {
+  id: string;
+  family_name: string;
+  family_code: string;
+};
+
+function UsersAccess({ currentRole, notify }: { currentRole: Role; notify: (message: string) => void }) {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<Role | "all">("all");
-  const users = [
-    { name: "School Super Admin", email: "admin@bnosmelochim.org", role: "super_admin" as Role, status: "Active", last: "Today" },
-    { name: "Registration Office", email: "registration@bnosmelochim.org", role: "registration_office" as Role, status: "Active", last: "Yesterday" },
-    { name: "Tuition Office", email: "tuition@bnosmelochim.org", role: "tuition_office" as Role, status: "Invited", last: "Invitation pending" },
-    { name: "Friedman Guardian", email: "parent.friedman@example.com", role: "parent" as Role, status: "Active", last: "July 24, 2026" },
-  ].filter((user) => (filter === "all" || user.role === filter) && `${user.name} ${user.email}`.toLowerCase().includes(query.toLowerCase()));
+  const [users, setUsers] = useState<AccessUser[]>([]);
+  const [families, setFamilies] = useState<FamilyOption[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [inviting, setInviting] = useState(false);
+  const [inviteMessage, setInviteMessage] = useState<string | null>(null);
+  const [inviteError, setInviteError] = useState<string | null>(null);
+  const [invite, setInvite] = useState({
+    email: "",
+    first_name: "",
+    last_name: "",
+    phone: "",
+    role: "parent" as Role,
+    family_id: "",
+  });
 
-  const secureAction = (action: string) => notify(`${action} should run through a Supabase Edge Function with the service role kept off the browser.`);
+  const canInviteStaff = currentRole === "super_admin";
+  const allowedInviteRoles: Role[] = useMemo(
+    () => (canInviteStaff ? ["parent", "registration_office", "tuition_office", "school_management", "super_admin"] : ["parent"]),
+    [canInviteStaff],
+  );
+
+  const refreshUsers = async () => {
+    if (!supabase) return;
+    setLoading(true);
+    const [{ data: profileRows }, { data: familyRows }] = await Promise.all([
+      supabase.from("profiles").select("id,email,first_name,last_name,role,status,created_at").order("created_at", { ascending: false }),
+      supabase.from("families").select("id,family_name,family_code").order("family_name"),
+    ]);
+    setUsers((profileRows ?? []) as AccessUser[]);
+    setFamilies((familyRows ?? []) as FamilyOption[]);
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    void refreshUsers();
+  }, []);
+
+  useEffect(() => {
+    if (!allowedInviteRoles.includes(invite.role)) setInvite((value) => ({ ...value, role: "parent" }));
+  }, [allowedInviteRoles, invite.role]);
+
+  const filteredUsers = users.filter((user) => {
+    const haystack = `${user.first_name} ${user.last_name} ${user.email}`.toLowerCase();
+    return haystack.includes(query.toLowerCase()) && (filter === "all" || user.role === filter);
+  });
+
+  const selectedFamily = families.find((family) => family.id === invite.family_id);
+
+  const validateInvite = () => {
+    if (!invite.email.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(invite.email.trim())) return "Enter a valid email address.";
+    if (!invite.first_name.trim()) return "First name is required.";
+    if (!invite.last_name.trim()) return "Last name is required.";
+    if (!allowedInviteRoles.includes(invite.role)) return "You do not have permission to invite that role.";
+    if (invite.role === "parent" && !invite.family_id) return "Choose a family before inviting a parent.";
+    return "";
+  };
+
+  const submitInvite = async (event: FormEvent) => {
+    event.preventDefault();
+    setInviteError(null);
+    setInviteMessage(null);
+    const validationError = validateInvite();
+    if (validationError) return setInviteError(validationError);
+    if (!supabase) return setInviteError("Supabase is not configured.");
+
+    setInviting(true);
+    const { data, error } = await supabase.functions.invoke("invite-user", {
+      body: {
+        email: invite.email.trim(),
+        first_name: invite.first_name.trim(),
+        last_name: invite.last_name.trim(),
+        phone: invite.phone.trim(),
+        role: invite.role,
+        family_id: invite.role === "parent" ? invite.family_id : undefined,
+      },
+    });
+    setInviting(false);
+
+    if (error) {
+      const message = typeof data?.error === "string" ? data.error : error.message || "Invitation failed. Please try again.";
+      return setInviteError(message);
+    }
+
+    const success = typeof data?.message === "string" ? data.message : selectedFamily ? `Invitation sent to ${invite.email.trim()} for ${selectedFamily.family_name}.` : `Invitation sent to ${invite.email.trim()}.`;
+    setInviteMessage(success);
+    notify(`Invitation sent to ${invite.email.trim()}.`);
+    setInvite({ email: "", first_name: "", last_name: "", phone: "", role: "parent", family_id: "" });
+    await refreshUsers();
+  };
 
   return (
     <div className="space-y-6">
       <PageTitle title="Users & Access" subtitle="Invite users, assign roles, disable accounts, reactivate access, and review recent activity." />
+      <Card>
+        <form onSubmit={submitInvite} className="grid gap-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h3 className="text-xl font-bold text-navy">Invite a portal user</h3>
+              <p className="mt-1 text-sm text-slate-600">{canInviteStaff ? "Super Admin may invite parent and staff accounts." : "Registration Office may invite parent accounts only."}</p>
+            </div>
+            <button disabled={inviting} className="rounded-xl bg-burgundy px-5 py-3 font-bold text-white hover:bg-burgundy-dark disabled:cursor-not-allowed disabled:opacity-60">
+              {inviting ? "Sending..." : "Invite User"}
+            </button>
+          </div>
+          {inviteMessage && <p className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm font-semibold text-emerald-800">{inviteMessage}</p>}
+          {inviteError && <p className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm font-semibold text-red-700">{inviteError}</p>}
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+            <label className="text-sm font-semibold text-slate-700">Email<input className="mt-1 w-full rounded-xl border px-4 py-3" type="email" value={invite.email} onChange={(event) => setInvite({ ...invite, email: event.target.value })} /></label>
+            <label className="text-sm font-semibold text-slate-700">First name<input className="mt-1 w-full rounded-xl border px-4 py-3" value={invite.first_name} onChange={(event) => setInvite({ ...invite, first_name: event.target.value })} /></label>
+            <label className="text-sm font-semibold text-slate-700">Last name<input className="mt-1 w-full rounded-xl border px-4 py-3" value={invite.last_name} onChange={(event) => setInvite({ ...invite, last_name: event.target.value })} /></label>
+            <label className="text-sm font-semibold text-slate-700">Phone<input className="mt-1 w-full rounded-xl border px-4 py-3" value={invite.phone} onChange={(event) => setInvite({ ...invite, phone: event.target.value })} /></label>
+            <label className="text-sm font-semibold text-slate-700">Role<select className="mt-1 w-full rounded-xl border px-4 py-3" value={invite.role} onChange={(event) => setInvite({ ...invite, role: event.target.value as Role, family_id: event.target.value === "parent" ? invite.family_id : "" })}>
+              {allowedInviteRoles.map((role) => <option key={role} value={role}>{roleLabels[role]}</option>)}
+            </select></label>
+            {invite.role === "parent" && (
+              <label className="text-sm font-semibold text-slate-700">Family<select className="mt-1 w-full rounded-xl border px-4 py-3" value={invite.family_id} onChange={(event) => setInvite({ ...invite, family_id: event.target.value })}>
+                <option value="">Choose family...</option>
+                {families.map((family) => <option key={family.id} value={family.id}>{family.family_name} · {family.family_code}</option>)}
+              </select></label>
+            )}
+          </div>
+          {invite.role === "parent" && selectedFamily && <p className="text-sm font-semibold text-navy">Parent will be connected to {selectedFamily.family_name}.</p>}
+        </form>
+      </Card>
       <Card>
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex flex-1 flex-wrap gap-3">
@@ -1518,26 +1646,20 @@ function UsersAccess({ notify }: { notify: (message: string) => void }) {
               <option value="super_admin">Super Admin</option>
             </select>
           </div>
-          <button onClick={() => secureAction("Invite user")} className="rounded-xl bg-burgundy px-5 py-3 font-bold text-white hover:bg-burgundy-dark">Invite User</button>
         </div>
       </Card>
-      <Table headers={["User", "Role", "Status", "Last activity", "Actions"]}>
-        {users.map((user) => (
-          <tr key={user.email}>
-            <td><p className="font-bold text-navy">{user.name}</p><p className="text-sm text-slate-500">{user.email}</p></td>
+      <Table headers={["User", "Role", "Status", "Created", "Actions"]}>
+        {filteredUsers.map((user) => (
+          <tr key={user.id}>
+            <td><p className="font-bold text-navy">{[user.first_name, user.last_name].filter(Boolean).join(" ") || user.email}</p><p className="text-sm text-slate-500">{user.email}</p></td>
             <td>{roleLabels[user.role]}</td>
             <td><StatusBadge status={user.status} /></td>
-            <td className="text-slate-600">{user.last}</td>
-            <td>
-              <div className="flex flex-wrap gap-2">
-                <button onClick={() => secureAction("Assign role")} className="rounded-lg border px-3 py-1.5 text-sm font-semibold hover:bg-ivory">Assign</button>
-                <button onClick={() => secureAction("Disable or reactivate account")} className="rounded-lg border px-3 py-1.5 text-sm font-semibold hover:bg-ivory">Disable/Reactivate</button>
-                <button onClick={() => secureAction("Open activity log")} className="rounded-lg border px-3 py-1.5 text-sm font-semibold hover:bg-ivory">Activity</button>
-              </div>
-            </td>
+            <td className="text-slate-600">{formatDate(user.created_at?.slice(0, 10))}</td>
+            <td><button onClick={() => notify("Access-management actions are handled by the update-user-access Edge Function.")} className="rounded-lg border px-3 py-1.5 text-sm font-semibold hover:bg-ivory">Manage</button></td>
           </tr>
         ))}
       </Table>
+      {!loading && !filteredUsers.length && <Empty />}
     </div>
   );
 }
