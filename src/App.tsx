@@ -746,11 +746,15 @@ function ResetPassword({ invitation = false }: { invitation?: boolean }) {
       const queryParams = url.searchParams;
       const accessToken = hashParams.get("access_token") ?? queryParams.get("access_token");
       const refreshToken = hashParams.get("refresh_token") ?? queryParams.get("refresh_token");
+      const code = queryParams.get("code") ?? hashParams.get("code");
       const tokenHash = queryParams.get("token_hash") ?? hashParams.get("token_hash");
       const type = queryParams.get("type") ?? hashParams.get("type") ?? (invitation ? "invite" : "recovery");
 
       if (accessToken && refreshToken) {
         const { error } = await supabase.auth.setSession({ access_token: accessToken, refresh_token: refreshToken });
+        if (error) setMessage("This link is no longer valid. Please request a new one.");
+      } else if (code) {
+        const { error } = await supabase.auth.exchangeCodeForSession(code);
         if (error) setMessage("This link is no longer valid. Please request a new one.");
       } else if (tokenHash) {
         const { error } = await supabase.auth.verifyOtp({ token_hash: tokenHash, type: type === "invite" ? "invite" : "recovery" });
