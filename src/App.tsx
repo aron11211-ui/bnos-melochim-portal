@@ -1381,7 +1381,12 @@ function RegistrationWizard({ state, setState, family, notify }: { state: AppSta
   const [step, setStep] = useState(0);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
-  const [draftFamily, setDraftFamily] = useState(family);
+  const [draftFamily, setDraftFamily] = useState<Family>({
+    ...family,
+    parents: family.parents.length
+      ? family.parents
+      : [{ name: "", relationship: "Parent / guardian", phone: family.phone, email: family.email, employer: "" }],
+  });
   const [draftStudents, setDraftStudents] = useState(state.students.filter((s) => s.familyId === family.id));
   const [acknowledgments, setAcknowledgments] = useState<Record<string, boolean>>({
     handbook: false,
@@ -1403,10 +1408,45 @@ function RegistrationWizard({ state, setState, family, notify }: { state: AppSta
     setDraftFamily((current) => ({ ...current, parents: current.parents.map((parent, parentIndex) => (parentIndex === index ? { ...parent, [field]: value } : parent)) }));
   const setStudentField = (id: string, field: keyof Student, value: string) =>
     setDraftStudents((current) => current.map((student) => (student.id === id ? { ...student, [field]: value } : student)));
+  const addDraftStudent = () => {
+    const nextStudentNumber = draftStudents.length + 1;
+    setDraftStudents((current) => [
+      ...current,
+      {
+        id: `new-${Date.now()}`,
+        familyId: family.id,
+        legalName: "",
+        preferredName: "",
+        dob: "",
+        gender: "Female",
+        grade: "",
+        program: "General Studies",
+        newReturning: "New",
+        registrationStatus: "In Progress",
+        documentStatus: "Missing",
+        tuitionStatus: "Current",
+        medicalAlerts: "None",
+        previousSchool: "",
+        physicianName: "",
+        physicianPhone: "",
+        emergencyInfo: "",
+        authorizedPickup: "",
+        transportation: "To be confirmed",
+        progress: 0,
+      },
+    ]);
+    setError("");
+    notify(`Child ${nextStudentNumber} added. Fill in her details, then save.`);
+  };
+  const removeDraftStudent = (id: string) => {
+    if (!id.startsWith("new-")) return setError("Existing student records can be removed by the school office.");
+    setDraftStudents((current) => current.filter((student) => student.id !== id));
+  };
   const dbStatus = (value: string) => value.toLowerCase().replaceAll(" ", "_");
   const validateCurrentStep = () => {
     if (step === 1 && (!draftFamily.email.trim() || !draftFamily.phone.trim())) return "Primary email and phone are required.";
     if (step === 2 && !draftFamily.parents.some((parent) => parent.name.trim() && parent.phone.trim())) return "At least one parent or guardian must have a name and phone number.";
+    if ([3, 4, 5].includes(step) && draftStudents.length === 0) return "Add at least one child before continuing.";
     if (step === 3 && draftStudents.some((student) => !student.legalName.trim() || !student.grade.trim())) return "Each student must have a legal name and grade.";
     if (step === 7 && !acknowledgments.handbook) return "Please acknowledge that you reviewed the parent handbook.";
     if (step === 9 && totalBlockers > 0) return "Please complete missing documents and agreements before final submission.";
@@ -1452,36 +1492,76 @@ function RegistrationWizard({ state, setState, family, notify }: { state: AppSta
       return setError(familySaveError.message || "Family information could not be saved.");
     }
 
-    const studentResults = await Promise.all(
-      draftStudents.map((student) =>
-        client
-          .from("students")
-          .update({
-            legal_name: student.legalName.trim(),
-            preferred_name: student.preferredName.trim() || student.legalName.trim(),
-            date_of_birth: student.dob || null,
-            gender: student.gender.trim() || null,
-            grade: student.grade.trim(),
-            program: student.program.trim() || null,
-            new_returning: student.newReturning,
-            medical_alerts: student.medicalAlerts.trim() || "None",
-            previous_school: student.previousSchool.trim() || null,
-            physician_name: student.physicianName.trim() || null,
-            physician_phone: student.physicianPhone.trim() || null,
-            emergency_info: student.emergencyInfo.trim() || null,
-            authorized_pickup: student.authorizedPickup.split(",").map((item) => item.trim()).filter(Boolean),
-            transportation: student.transportation.trim() || null,
-            registration_status: dbStatus(student.registrationStatus),
-            progress,
-          })
-          .eq("id", student.id),
-      ),
-    );
-    const studentSaveError = studentResults.find((result) => result.error)?.error;
-    if (studentSaveError) {
-      setSaving(false);
-      return setError(studentSaveError.message || "Student information could not be saved.");
+    const toStudentPayload = (student: Student) => ({
+      family_id: familyDbId,
+      legal_name: student.legalName.trim(),
+      preferred_name: student.preferredName.trim() || student.legalName.trim(),
+      date_of_birth: student.dob || null,
+      gender: student.gender.trim() || null,
+      grade: student.grade.trim(),
+      program: student.program.trim() || null,
+      new_returning: student.newReturning,
+      medical_alerts: student.medicalAlerts.trim() || "None",
+      previous_school: student.previousSchool.trim() || null,
+      physician_name: student.physicianName.trim() || null,
+      physician_phone: student.physicianPhone.trim() || null,
+      emergency_info: student.emergencyInfo.trim() || null,
+      authorized_pickup: student.authorizedPickup.split(",").map((item) => item.trim()).filter(Boolean),
+      transportation: student.transportation.trim() || null,
+      registration_status: dbStatus(student.registrationStatus),
+      document_status: dbStatus(student.documentStatus),
+      tuition_status: dbStatus(student.tuitionStatus),
+      progress,
+    });
+    const savedDraftStudents = [...draftStudents];
+    for (const student of draftStudents) {
+      const payload = toStudentPayload(student);
+      const result = student.id.startsWith("new-")
+        ? await client
+            .from("students")
+            .insert(payload)
+            .select("id,legal_name,preferred_name,date_of_birth,gender,grade,program,new_returning,registration_status,document_status,tuition_status,transportation,previous_school,medical_alerts,physician_name,physician_phone,emergency_info,authorized_pickup,progress")
+            .single()
+        : await client
+            .from("students")
+            .update(payload)
+            .eq("id", student.id)
+            .select("id,legal_name,preferred_name,date_of_birth,gender,grade,program,new_returning,registration_status,document_status,tuition_status,transportation,previous_school,medical_alerts,physician_name,physician_phone,emergency_info,authorized_pickup,progress")
+            .single();
+      if (result.error || !result.data) {
+        setSaving(false);
+        return setError(result.error?.message || "Student information could not be saved.");
+      }
+      const savedStudent: Student = {
+        id: result.data.id,
+        familyId: family.id,
+        legalName: result.data.legal_name ?? student.legalName,
+        preferredName: result.data.preferred_name ?? result.data.legal_name ?? student.preferredName,
+        dob: result.data.date_of_birth ?? "",
+        gender: result.data.gender ?? "",
+        grade: result.data.grade ?? "",
+        program: result.data.program ?? "",
+        newReturning: result.data.new_returning === "Returning" ? "Returning" : "New",
+        registrationStatus: toRegistrationStatus(result.data.registration_status),
+        documentStatus: toDocStatus(result.data.document_status),
+        tuitionStatus: toTuitionStatus(result.data.tuition_status),
+        medicalAlerts: result.data.medical_alerts ?? "None",
+        previousSchool: result.data.previous_school ?? "",
+        physicianName: result.data.physician_name ?? "",
+        physicianPhone: result.data.physician_phone ?? "",
+        emergencyInfo: result.data.emergency_info ?? "",
+        authorizedPickup: Array.isArray(result.data.authorized_pickup) ? result.data.authorized_pickup.join(", ") : "",
+        transportation: result.data.transportation ?? "",
+        progress: result.data.progress ?? progress,
+      };
+      const index = savedDraftStudents.findIndex((item) => item.id === student.id);
+      if (index >= 0) savedDraftStudents[index] = savedStudent;
     }
+    if (savedDraftStudents.some((student) => student.id.startsWith("new-"))) {
+      setSaving(false);
+      return setError("One or more new student records could not be saved.");
+    }
+    if (savedDraftStudents.some((student, index) => student.id !== draftStudents[index]?.id)) setDraftStudents(savedDraftStudents);
 
     const { data: existingRegistration, error: lookupError } = await client
       .from("registrations")
@@ -1525,7 +1605,7 @@ function RegistrationWizard({ state, setState, family, notify }: { state: AppSta
         phone: draftFamily.phone,
         address: [draftFamily.address, draftFamily.city, draftFamily.state, draftFamily.zip].filter(Boolean).join(", "),
       },
-      students: draftStudents.map((student) => ({
+      students: savedDraftStudents.map((student) => ({
         id: student.id,
         legal_name: student.legalName,
         preferred_name: student.preferredName,
@@ -1560,7 +1640,10 @@ function RegistrationWizard({ state, setState, family, notify }: { state: AppSta
     setState({
       ...state,
       families: state.families.map((f) => (f.id === family.id ? { ...draftFamily, registrationPercent: progress, status: progress >= 100 ? "Submitted" : "In Progress" } : f)),
-      students: state.students.map((student) => draftStudents.find((draft) => draft.id === student.id) ? { ...draftStudents.find((draft) => draft.id === student.id)!, progress } : student),
+      students: [
+        ...savedDraftStudents.map((student) => ({ ...student, progress })),
+        ...state.students.filter((student) => student.familyId !== family.id),
+      ],
     });
     setSaving(false);
     notify(isFinalSubmit ? "Registration submitted to the school office." : exit ? "Registration section saved to Supabase. You can return anytime." : "Registration section saved to Supabase.");
@@ -1589,7 +1672,34 @@ function RegistrationWizard({ state, setState, family, notify }: { state: AppSta
         {step === 0 && <div className="mt-5 grid gap-4 md:grid-cols-3"><Info label="Family" value={draftFamily.name} /><Info label="Students" value={String(draftStudents.length)} /><Info label="Missing before submit" value={String(totalBlockers)} /><p className="md:col-span-3 text-slate-600">We’ll walk you through household information, each child, emergency and medical details, transportation, documents, policies, tuition review, and final signature.</p></div>}
         {step === 1 && <div className="mt-5 grid gap-3 md:grid-cols-2">{(["name", "address", "city", "state", "zip", "phone", "email", "shul"] as (keyof Family)[]).map((field) => <label key={field} className="text-sm font-semibold text-slate-700">{String(field).replace(/([A-Z])/g, " $1")}<input className="mt-1 w-full rounded-xl border px-4 py-3" value={String(draftFamily[field] ?? "")} onChange={(event) => setFamilyField(field, event.target.value)} /></label>)}</div>}
         {step === 2 && <div className="mt-5 grid gap-4 md:grid-cols-2">{draftFamily.parents.map((parent, index) => <div key={`${parent.relationship}-${index}`} className="rounded-2xl bg-ivory p-4"><p className="font-bold text-navy">{parent.relationship || `Guardian ${index + 1}`}</p><label className="mt-3 block text-sm font-semibold text-slate-700">Name<input className="mt-1 w-full rounded-xl border px-4 py-3" value={parent.name} onChange={(event) => setParentField(index, "name", event.target.value)} /></label><label className="mt-3 block text-sm font-semibold text-slate-700">Phone<input className="mt-1 w-full rounded-xl border px-4 py-3" value={parent.phone} onChange={(event) => setParentField(index, "phone", event.target.value)} /></label><label className="mt-3 block text-sm font-semibold text-slate-700">Email<input className="mt-1 w-full rounded-xl border px-4 py-3" value={parent.email} onChange={(event) => setParentField(index, "email", event.target.value)} /></label><label className="mt-3 block text-sm font-semibold text-slate-700">Employer<input className="mt-1 w-full rounded-xl border px-4 py-3" value={parent.employer} onChange={(event) => setParentField(index, "employer", event.target.value)} /></label></div>)}</div>}
-        {step === 3 && <div className="mt-5 grid gap-4">{draftStudents.map((student) => <div key={student.id} className="rounded-2xl border border-slate-200 p-4"><h4 className="font-bold text-navy">{student.preferredName || student.legalName}</h4><div className="mt-3 grid gap-3 md:grid-cols-3"><label className="text-sm font-semibold text-slate-700">Legal name<input className="mt-1 w-full rounded-xl border px-4 py-3" value={student.legalName} onChange={(event) => setStudentField(student.id, "legalName", event.target.value)} /></label><label className="text-sm font-semibold text-slate-700">Preferred name<input className="mt-1 w-full rounded-xl border px-4 py-3" value={student.preferredName} onChange={(event) => setStudentField(student.id, "preferredName", event.target.value)} /></label><label className="text-sm font-semibold text-slate-700">Date of birth<input type="date" className="mt-1 w-full rounded-xl border px-4 py-3" value={student.dob} onChange={(event) => setStudentField(student.id, "dob", event.target.value)} /></label><label className="text-sm font-semibold text-slate-700">Grade<input className="mt-1 w-full rounded-xl border px-4 py-3" value={student.grade} onChange={(event) => setStudentField(student.id, "grade", event.target.value)} /></label><label className="text-sm font-semibold text-slate-700">Program<input className="mt-1 w-full rounded-xl border px-4 py-3" value={student.program} onChange={(event) => setStudentField(student.id, "program", event.target.value)} /></label><label className="text-sm font-semibold text-slate-700">Previous school<input className="mt-1 w-full rounded-xl border px-4 py-3" value={student.previousSchool} onChange={(event) => setStudentField(student.id, "previousSchool", event.target.value)} /></label></div></div>)}</div>}
+        {step === 3 && (
+          <div className="mt-5 grid gap-4">
+            {!draftStudents.length && (
+              <div className="rounded-2xl border border-dashed border-gold bg-gold/10 p-5">
+                <h4 className="text-lg font-bold text-navy">No children are attached to this family yet</h4>
+                <p className="mt-2 text-sm text-slate-700">Add each child you want to register. You can add medical, emergency, and transportation details on the next steps.</p>
+                <button type="button" onClick={addDraftStudent} className="mt-4 rounded-xl bg-navy px-5 py-3 font-bold text-white hover:bg-burgundy">Add Child</button>
+              </div>
+            )}
+            {draftStudents.map((student, index) => (
+              <div key={student.id} className="rounded-2xl border border-slate-200 p-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <h4 className="font-bold text-navy">{student.preferredName || student.legalName || `Child ${index + 1}`}</h4>
+                  {student.id.startsWith("new-") && <button type="button" onClick={() => removeDraftStudent(student.id)} className="rounded-lg border px-3 py-1.5 text-sm font-bold text-red-700 hover:bg-red-50">Remove</button>}
+                </div>
+                <div className="mt-3 grid gap-3 md:grid-cols-3">
+                  <label className="text-sm font-semibold text-slate-700">Legal name<input className="mt-1 w-full rounded-xl border px-4 py-3" value={student.legalName} onChange={(event) => setStudentField(student.id, "legalName", event.target.value)} /></label>
+                  <label className="text-sm font-semibold text-slate-700">Preferred name<input className="mt-1 w-full rounded-xl border px-4 py-3" value={student.preferredName} onChange={(event) => setStudentField(student.id, "preferredName", event.target.value)} /></label>
+                  <label className="text-sm font-semibold text-slate-700">Date of birth<input type="date" className="mt-1 w-full rounded-xl border px-4 py-3" value={student.dob} onChange={(event) => setStudentField(student.id, "dob", event.target.value)} /></label>
+                  <label className="text-sm font-semibold text-slate-700">Grade<input className="mt-1 w-full rounded-xl border px-4 py-3" value={student.grade} onChange={(event) => setStudentField(student.id, "grade", event.target.value)} placeholder="Pre-K, 1, 2..." /></label>
+                  <label className="text-sm font-semibold text-slate-700">Program<input className="mt-1 w-full rounded-xl border px-4 py-3" value={student.program} onChange={(event) => setStudentField(student.id, "program", event.target.value)} /></label>
+                  <label className="text-sm font-semibold text-slate-700">Previous school<input className="mt-1 w-full rounded-xl border px-4 py-3" value={student.previousSchool} onChange={(event) => setStudentField(student.id, "previousSchool", event.target.value)} /></label>
+                </div>
+              </div>
+            ))}
+            {!!draftStudents.length && <button type="button" onClick={addDraftStudent} className="w-fit rounded-xl border border-gold px-5 py-3 font-bold text-burgundy hover:bg-ivory">Add Another Child</button>}
+          </div>
+        )}
         {step === 4 && <div className="mt-5 grid gap-4">{draftStudents.map((student) => <div key={student.id} className="rounded-2xl border border-slate-200 p-4"><h4 className="font-bold text-navy">{student.preferredName || student.legalName}</h4><div className="mt-3 grid gap-3 md:grid-cols-2"><label className="text-sm font-semibold text-slate-700">Medical alerts<input className="mt-1 w-full rounded-xl border px-4 py-3" value={student.medicalAlerts} onChange={(event) => setStudentField(student.id, "medicalAlerts", event.target.value)} /></label><label className="text-sm font-semibold text-slate-700">Physician name<input className="mt-1 w-full rounded-xl border px-4 py-3" value={student.physicianName} onChange={(event) => setStudentField(student.id, "physicianName", event.target.value)} /></label><label className="text-sm font-semibold text-slate-700">Physician phone<input className="mt-1 w-full rounded-xl border px-4 py-3" value={student.physicianPhone} onChange={(event) => setStudentField(student.id, "physicianPhone", event.target.value)} /></label><label className="text-sm font-semibold text-slate-700">Authorized pickup contacts<input className="mt-1 w-full rounded-xl border px-4 py-3" value={student.authorizedPickup} onChange={(event) => setStudentField(student.id, "authorizedPickup", event.target.value)} /></label></div><label className="mt-3 block text-sm font-semibold text-slate-700">Emergency information<textarea className="mt-1 min-h-24 w-full rounded-xl border px-4 py-3" value={student.emergencyInfo} onChange={(event) => setStudentField(student.id, "emergencyInfo", event.target.value)} /></label></div>)}</div>}
         {step === 5 && <div className="mt-5 grid gap-4">{draftStudents.map((student) => <label key={student.id} className="block rounded-2xl border border-slate-200 p-4 text-sm font-semibold text-slate-700">{student.preferredName || student.legalName} transportation<input className="mt-2 w-full rounded-xl border px-4 py-3" value={student.transportation} onChange={(event) => setStudentField(student.id, "transportation", event.target.value)} placeholder="Bus route, parent pickup, carpool, walk authorization..." /></label>)}</div>}
         {step === 6 && <div className="mt-5 grid gap-3">{familyDocs.map((doc) => <div key={doc.id} className="flex flex-col gap-3 rounded-2xl border border-slate-200 p-4 sm:flex-row sm:items-center sm:justify-between"><div><p className="font-bold text-navy">{doc.type}</p><p className="text-sm text-slate-600">{doc.category} · {doc.uploadDate ? `Uploaded ${formatDate(doc.uploadDate)}` : "Not uploaded yet"}</p>{doc.rejectionReason && <p className="mt-2 text-sm text-red-700">{doc.rejectionReason}</p>}</div><div className="flex items-center gap-3"><StatusBadge status={doc.status} /><Link to="/parent/documents" className="rounded-xl bg-navy px-3 py-2 text-sm font-bold text-white">Manage</Link></div></div>)}{!familyDocs.length && <Empty title="No document requirements found" text="The office has not assigned document requirements to this family yet." />}</div>}
