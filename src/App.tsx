@@ -1669,7 +1669,26 @@ function RegistrationWizard({ state, setState, family, notify }: { state: AppSta
       <Card>
         <h3 className="text-2xl font-bold text-navy">{currentStep.title}</h3>
         {error && <p className="mt-4 rounded-xl bg-red-50 p-3 text-sm font-semibold text-red-700">{error}</p>}
-        {step === 0 && <div className="mt-5 grid gap-4 md:grid-cols-3"><Info label="Family" value={draftFamily.name} /><Info label="Students" value={String(draftStudents.length)} /><Info label="Missing before submit" value={String(totalBlockers)} /><p className="md:col-span-3 text-slate-600">We’ll walk you through household information, each child, emergency and medical details, transportation, documents, policies, tuition review, and final signature.</p></div>}
+        {step === 0 && (
+          <div className="mt-5 grid gap-4">
+            <div className="grid gap-4 md:grid-cols-3">
+              <Info label="Family" value={draftFamily.name} />
+              <Info label="Students" value={String(draftStudents.length)} />
+              <Info label="Missing before submit" value={String(totalBlockers)} />
+            </div>
+            <p className="text-slate-600">We’ll walk you through household information, each child, emergency and medical details, transportation, documents, policies, tuition review, and final signature.</p>
+            <div className="grid gap-3 md:grid-cols-2">
+              <button type="button" onClick={() => setStep(1)} className="rounded-2xl border border-slate-200 bg-ivory p-4 text-left hover:border-gold focus-visible:border-gold">
+                <p className="font-bold text-navy">Review family information</p>
+                <p className="mt-1 text-sm text-slate-600">Confirm address, phone, email, shul, and household information.</p>
+              </button>
+              <button type="button" onClick={() => { if (!draftStudents.length) addDraftStudent(); setStep(3); }} className="rounded-2xl border border-gold bg-gold/10 p-4 text-left hover:bg-gold/20 focus-visible:bg-gold/20">
+                <p className="font-bold text-navy">{draftStudents.length ? "Review children" : "Add your first child"}</p>
+                <p className="mt-1 text-sm text-slate-700">Enter student name, date of birth, grade, program, medical, and transportation details.</p>
+              </button>
+            </div>
+          </div>
+        )}
         {step === 1 && <div className="mt-5 grid gap-3 md:grid-cols-2">{(["name", "address", "city", "state", "zip", "phone", "email", "shul"] as (keyof Family)[]).map((field) => <label key={field} className="text-sm font-semibold text-slate-700">{String(field).replace(/([A-Z])/g, " $1")}<input className="mt-1 w-full rounded-xl border px-4 py-3" value={String(draftFamily[field] ?? "")} onChange={(event) => setFamilyField(field, event.target.value)} /></label>)}</div>}
         {step === 2 && <div className="mt-5 grid gap-4 md:grid-cols-2">{draftFamily.parents.map((parent, index) => <div key={`${parent.relationship}-${index}`} className="rounded-2xl bg-ivory p-4"><p className="font-bold text-navy">{parent.relationship || `Guardian ${index + 1}`}</p><label className="mt-3 block text-sm font-semibold text-slate-700">Name<input className="mt-1 w-full rounded-xl border px-4 py-3" value={parent.name} onChange={(event) => setParentField(index, "name", event.target.value)} /></label><label className="mt-3 block text-sm font-semibold text-slate-700">Phone<input className="mt-1 w-full rounded-xl border px-4 py-3" value={parent.phone} onChange={(event) => setParentField(index, "phone", event.target.value)} /></label><label className="mt-3 block text-sm font-semibold text-slate-700">Email<input className="mt-1 w-full rounded-xl border px-4 py-3" value={parent.email} onChange={(event) => setParentField(index, "email", event.target.value)} /></label><label className="mt-3 block text-sm font-semibold text-slate-700">Employer<input className="mt-1 w-full rounded-xl border px-4 py-3" value={parent.employer} onChange={(event) => setParentField(index, "employer", event.target.value)} /></label></div>)}</div>}
         {step === 3 && (
