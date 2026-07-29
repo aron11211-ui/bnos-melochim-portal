@@ -86,6 +86,11 @@ type Student = {
   documentStatus: DocStatus;
   tuitionStatus: "Current" | "Overdue" | "Arrangement" | "Credit";
   medicalAlerts: string;
+  previousSchool: string;
+  physicianName: string;
+  physicianPhone: string;
+  emergencyInfo: string;
+  authorizedPickup: string;
   transportation: string;
   progress: number;
 };
@@ -352,6 +357,11 @@ const initialStudents: Student[] = [
   documentStatus: documentStatus as DocStatus,
   tuitionStatus: tuitionStatus as Student["tuitionStatus"],
   medicalAlerts: medicalAlerts as string,
+  previousSchool: "",
+  physicianName: "",
+  physicianPhone: "",
+  emergencyInfo: "",
+  authorizedPickup: "Parents and listed guardians",
   transportation: transportation as string,
   progress: Number(progress),
 }));
@@ -524,6 +534,11 @@ async function loadPortalData(client: SupabaseClient, profile: Profile): Promise
       documentStatus: toDocStatus(student.document_status),
       tuitionStatus: toTuitionStatus(student.tuition_status),
       medicalAlerts: student.medical_alerts ?? "None",
+      previousSchool: student.previous_school ?? "",
+      physicianName: student.physician_name ?? "",
+      physicianPhone: student.physician_phone ?? "",
+      emergencyInfo: student.emergency_info ?? "",
+      authorizedPickup: Array.isArray(student.authorized_pickup) ? student.authorized_pickup.join(", ") : "",
       transportation: student.transportation ?? "",
       progress: student.progress ?? 0,
     })),
@@ -1815,9 +1830,10 @@ function StudentsTable({ state, setState, currentRole, notify }: { state: AppSta
   const [query, setQuery] = useState("");
   const [grade, setGrade] = useState("All");
   const [showAdd, setShowAdd] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
-  const [form, setForm] = useState({
+  const blankStudentForm = {
     familyId: "",
     legalName: "",
     preferredName: "",
@@ -1827,45 +1843,109 @@ function StudentsTable({ state, setState, currentRole, notify }: { state: AppSta
     program: "General Studies",
     newReturning: "New" as Student["newReturning"],
     transportation: "To be confirmed",
-  });
+    previousSchool: "",
+    medicalAlerts: "None",
+    physicianName: "",
+    physicianPhone: "",
+    emergencyInfo: "",
+    authorizedPickup: "",
+  };
+  const [form, setForm] = useState(blankStudentForm);
   const staffBase = `/${useLocation().pathname.split("/")[1] || "admin"}`;
-  const canAddStudent = currentRole === "super_admin" || currentRole === "registration_office";
-  const rows = state.students.filter((s) => `${s.preferredName} ${s.legalName} ${s.grade}`.toLowerCase().includes(query.toLowerCase()) && (grade === "All" || s.grade === grade));
+  const canManageStudents = currentRole === "super_admin" || currentRole === "registration_office";
+  const familyName = (familyId: string) => {
+    const family = state.families.find((item) => item.id === familyId);
+    return family ? `${family.name} · ${family.code ?? family.id}` : familyId;
+  };
+  const rows = state.students.filter((s) => `${s.preferredName} ${s.legalName} ${s.grade} ${familyName(s.familyId)} ${s.program}`.toLowerCase().includes(query.toLowerCase()) && (grade === "All" || s.grade === grade));
   const selectedFamily = state.families.find((family) => family.id === form.familyId);
   const updateForm = (field: keyof typeof form, value: string) => setForm((current) => ({ ...current, [field]: value }));
+  const resetForm = () => {
+    setForm(blankStudentForm);
+    setEditingId(null);
+    setShowAdd(false);
+    setError("");
+  };
+  const openCreate = () => {
+    setForm(blankStudentForm);
+    setEditingId(null);
+    setShowAdd((value) => !value);
+    setError("");
+  };
+  const openEdit = (student: Student) => {
+    setForm({
+      familyId: student.familyId,
+      legalName: student.legalName,
+      preferredName: student.preferredName,
+      dob: student.dob,
+      gender: student.gender,
+      grade: student.grade,
+      program: student.program || "General Studies",
+      newReturning: student.newReturning,
+      transportation: student.transportation,
+      previousSchool: student.previousSchool,
+      medicalAlerts: student.medicalAlerts,
+      physicianName: student.physicianName,
+      physicianPhone: student.physicianPhone,
+      emergencyInfo: student.emergencyInfo,
+      authorizedPickup: student.authorizedPickup,
+    });
+    setEditingId(student.id);
+    setShowAdd(true);
+    setError("");
+  };
   const saveStudent = async (event: FormEvent) => {
     event.preventDefault();
     setError("");
-    if (!canAddStudent) return setError("Your role cannot create student records.");
-    if (!selectedFamily) return setError("Choose a family before adding a student.");
+    if (!canManageStudents) return setError("Your role cannot create or edit student records.");
+    if (!selectedFamily) return setError("Choose a family before saving the student.");
     if (!form.legalName.trim()) return setError("Legal name is required.");
     if (!form.grade.trim()) return setError("Grade is required.");
     if (!supabase) return setError("Supabase is not configured.");
 
     setSaving(true);
-    const { data, error: insertError } = await supabase
-      .from("students")
-      .insert({
-        family_id: selectedFamily.dbId ?? selectedFamily.id,
-        legal_name: form.legalName.trim(),
-        preferred_name: form.preferredName.trim() || form.legalName.trim(),
-        date_of_birth: form.dob || null,
-        gender: form.gender.trim() || null,
-        grade: form.grade.trim(),
-        program: form.program.trim(),
-        new_returning: form.newReturning,
-        registration_status: "in_progress",
-        document_status: "missing",
-        tuition_status: "current",
-        transportation: form.transportation.trim(),
-        progress: 0,
-      })
-      .select("id,family_id,legal_name,preferred_name,date_of_birth,gender,grade,program,new_returning,registration_status,document_status,tuition_status,transportation,progress")
+    const duplicate = !editingId
+      ? state.students.some((student) => student.familyId === selectedFamily.id && student.legalName.trim().toLowerCase() === form.legalName.trim().toLowerCase() && (!form.dob || student.dob === form.dob))
+      : false;
+    if (duplicate) {
+      setSaving(false);
+      return setError("This family already has a student with that name and date of birth.");
+    }
+
+    const existingStudent = editingId ? state.students.find((student) => student.id === editingId) : null;
+    const dbStatus = (value: string) => value.toLowerCase().replaceAll(" ", "_");
+    const studentPayload = {
+      family_id: selectedFamily.dbId ?? selectedFamily.id,
+      legal_name: form.legalName.trim(),
+      preferred_name: form.preferredName.trim() || form.legalName.trim(),
+      date_of_birth: form.dob || null,
+      gender: form.gender.trim() || null,
+      grade: form.grade.trim(),
+      program: form.program.trim(),
+      new_returning: form.newReturning,
+      registration_status: existingStudent ? dbStatus(existingStudent.registrationStatus) : "in_progress",
+      document_status: existingStudent ? dbStatus(existingStudent.documentStatus) : "missing",
+      tuition_status: existingStudent ? dbStatus(existingStudent.tuitionStatus) : "current",
+      transportation: form.transportation.trim(),
+      previous_school: form.previousSchool.trim() || null,
+      medical_alerts: form.medicalAlerts.trim() || "None",
+      physician_name: form.physicianName.trim() || null,
+      physician_phone: form.physicianPhone.trim() || null,
+      emergency_info: form.emergencyInfo.trim() || null,
+      authorized_pickup: form.authorizedPickup.split(",").map((item) => item.trim()).filter(Boolean),
+      progress: editingId ? state.students.find((student) => student.id === editingId)?.progress ?? 0 : 0,
+    };
+
+    const mutation = editingId
+      ? supabase.from("students").update(studentPayload).eq("id", editingId)
+      : supabase.from("students").insert(studentPayload);
+    const { data, error: saveError } = await mutation
+      .select("id,family_id,legal_name,preferred_name,date_of_birth,gender,grade,program,new_returning,registration_status,document_status,tuition_status,transportation,previous_school,medical_alerts,physician_name,physician_phone,emergency_info,authorized_pickup,progress")
       .single();
     setSaving(false);
-    if (insertError || !data) return setError(insertError?.message || "Student could not be created.");
+    if (saveError || !data) return setError(saveError?.message || "Student record could not be saved.");
 
-    const newStudent: Student = {
+    const savedStudent: Student = {
       id: data.id,
       familyId: selectedFamily.id,
       preferredName: data.preferred_name ?? data.legal_name,
@@ -1878,26 +1958,30 @@ function StudentsTable({ state, setState, currentRole, notify }: { state: AppSta
       registrationStatus: toRegistrationStatus(data.registration_status),
       documentStatus: toDocStatus(data.document_status),
       tuitionStatus: toTuitionStatus(data.tuition_status),
-      medicalAlerts: "None",
+      medicalAlerts: data.medical_alerts ?? "None",
+      previousSchool: data.previous_school ?? "",
+      physicianName: data.physician_name ?? "",
+      physicianPhone: data.physician_phone ?? "",
+      emergencyInfo: data.emergency_info ?? "",
+      authorizedPickup: Array.isArray(data.authorized_pickup) ? data.authorized_pickup.join(", ") : "",
       transportation: data.transportation ?? "",
       progress: data.progress ?? 0,
     };
-    setState((current) => ({ ...current, students: [newStudent, ...current.students.filter((student) => student.id !== newStudent.id)] }));
-    notify(`${newStudent.legalName} student record created.`);
-    setForm({ familyId: "", legalName: "", preferredName: "", dob: "", gender: "", grade: "", program: "General Studies", newReturning: "New", transportation: "To be confirmed" });
-    setShowAdd(false);
+    setState((current) => ({ ...current, students: [savedStudent, ...current.students.filter((student) => student.id !== savedStudent.id)] }));
+    notify(`${savedStudent.legalName} student record ${editingId ? "updated" : "created"}.`);
+    resetForm();
   };
   return (
     <div className="space-y-6">
       <PageTitle title="Students" subtitle="Student roster with enrollment, medical, transportation, document, and tuition status." />
-      {canAddStudent && (
+      {canManageStudents && (
         <Card>
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <h3 className="text-xl font-bold text-navy">Create student record</h3>
-              <p className="mt-1 text-sm text-slate-600">Attach a student to an existing family so registration, documents, and tuition can be tracked together.</p>
+              <h3 className="text-xl font-bold text-navy">{editingId ? "Edit student record" : "Create student record"}</h3>
+              <p className="mt-1 text-sm text-slate-600">Attach students to families and keep profile, medical, transportation, and registration details in Supabase.</p>
             </div>
-            <button onClick={() => setShowAdd((value) => !value)} className="rounded-xl bg-burgundy px-5 py-3 font-bold text-white hover:bg-burgundy-dark">{showAdd ? "Close" : "Add Student"}</button>
+            <button onClick={openCreate} className="rounded-xl bg-burgundy px-5 py-3 font-bold text-white hover:bg-burgundy-dark">{showAdd && !editingId ? "Close" : "Add Student"}</button>
           </div>
           {showAdd && (
             <form onSubmit={saveStudent} className="mt-5 grid gap-4">
@@ -1918,17 +2002,39 @@ function StudentsTable({ state, setState, currentRole, notify }: { state: AppSta
                   <option>Returning</option>
                 </select></label>
                 <label className="text-sm font-semibold text-slate-700">Transportation<input className="mt-1 w-full rounded-xl border px-4 py-3" value={form.transportation} onChange={(event) => updateForm("transportation", event.target.value)} /></label>
+                <label className="text-sm font-semibold text-slate-700">Previous school<input className="mt-1 w-full rounded-xl border px-4 py-3" value={form.previousSchool} onChange={(event) => updateForm("previousSchool", event.target.value)} /></label>
+                <label className="text-sm font-semibold text-slate-700">Medical alerts<input className="mt-1 w-full rounded-xl border px-4 py-3" value={form.medicalAlerts} onChange={(event) => updateForm("medicalAlerts", event.target.value)} placeholder="None, allergies, asthma..." /></label>
+                <label className="text-sm font-semibold text-slate-700">Physician name<input className="mt-1 w-full rounded-xl border px-4 py-3" value={form.physicianName} onChange={(event) => updateForm("physicianName", event.target.value)} /></label>
+                <label className="text-sm font-semibold text-slate-700">Physician phone<input className="mt-1 w-full rounded-xl border px-4 py-3" value={form.physicianPhone} onChange={(event) => updateForm("physicianPhone", event.target.value)} /></label>
               </div>
-              <button disabled={saving} className="w-fit rounded-xl bg-navy px-5 py-3 font-bold text-white hover:bg-navy/90 disabled:opacity-60">{saving ? "Creating..." : "Create Student"}</button>
+              <label className="text-sm font-semibold text-slate-700">Emergency information<textarea className="mt-1 min-h-24 w-full rounded-xl border px-4 py-3" value={form.emergencyInfo} onChange={(event) => updateForm("emergencyInfo", event.target.value)} placeholder="Emergency notes, allergies, medications, or important care instructions." /></label>
+              <label className="text-sm font-semibold text-slate-700">Authorized pickup contacts<textarea className="mt-1 min-h-20 w-full rounded-xl border px-4 py-3" value={form.authorizedPickup} onChange={(event) => updateForm("authorizedPickup", event.target.value)} placeholder="Separate names with commas." /></label>
+              <div className="flex flex-wrap gap-3">
+                <button disabled={saving} className="rounded-xl bg-navy px-5 py-3 font-bold text-white hover:bg-navy/90 disabled:opacity-60">{saving ? "Saving..." : editingId ? "Save Student" : "Create Student"}</button>
+                <button type="button" onClick={resetForm} className="rounded-xl border px-5 py-3 font-bold text-navy hover:bg-ivory">Cancel</button>
+              </div>
             </form>
           )}
         </Card>
       )}
       <SearchBar query={query} setQuery={setQuery} />
       <FilterBar value={grade} setValue={setGrade} options={["All", ...Array.from(new Set(state.students.map((s) => s.grade)))]} />
-      <Table headers={["Student", "Family", "Grade", "Program", "Registration", "Documents", "Tuition", ""]}>
-        {rows.map((s) => <tr key={s.id}><td>{s.legalName}</td><td>{s.familyId}</td><td>{s.grade}</td><td>{s.program}</td><td><StatusBadge status={s.registrationStatus} /></td><td><StatusBadge status={s.documentStatus} /></td><td><StatusBadge status={s.tuitionStatus} /></td><td><Link to={`${staffBase}/students/${s.id}`} className="font-bold text-navy">View</Link></td></tr>)}
+      <Table headers={["Student", "Family", "Grade", "Program", "Medical", "Registration", "Documents", "Tuition", "Actions"]}>
+        {rows.map((s) => (
+          <tr key={s.id}>
+            <td><p className="font-bold text-navy">{s.legalName}</p><p className="text-xs text-slate-500">{s.preferredName !== s.legalName ? s.preferredName : s.newReturning}</p></td>
+            <td>{familyName(s.familyId)}</td>
+            <td>{s.grade || "—"}</td>
+            <td>{s.program || "—"}</td>
+            <td>{s.medicalAlerts || "None"}</td>
+            <td><StatusBadge status={s.registrationStatus} /></td>
+            <td><StatusBadge status={s.documentStatus} /></td>
+            <td><StatusBadge status={s.tuitionStatus} /></td>
+            <td><div className="flex flex-wrap gap-2"><Link to={`${staffBase}/students/${s.id}`} className="font-bold text-navy">View</Link>{canManageStudents && <button type="button" onClick={() => openEdit(s)} className="font-bold text-burgundy hover:text-burgundy-dark">Edit</button>}</div></td>
+          </tr>
+        ))}
       </Table>
+      {!rows.length && <Empty title="No students found" text="Try a different search or add the first student for a family." />}
     </div>
   );
 }
@@ -1959,11 +2065,11 @@ function StudentDetail({ state, admin = false }: { state: AppState; admin?: bool
     <div className="space-y-6">
       <PageTitle title={student.legalName} subtitle={`${student.program} · Grade ${student.grade} · ${family.name} family`} />
       <Card className="grid gap-4 md:grid-cols-3">
-        <Info label="Preferred name" value={student.preferredName} /><Info label="Date of birth" value={student.dob} /><Info label="Gender" value={student.gender} /><Info label="Enrollment status" value={student.registrationStatus} /><Info label="Medical alerts" value={student.medicalAlerts} /><Info label="Transportation" value={student.transportation} />
+        <Info label="Preferred name" value={student.preferredName} /><Info label="Date of birth" value={formatDate(student.dob)} /><Info label="Gender" value={student.gender || "—"} /><Info label="Enrollment status" value={student.registrationStatus} /><Info label="Student type" value={student.newReturning} /><Info label="Previous school" value={student.previousSchool || "—"} /><Info label="Medical alerts" value={student.medicalAlerts || "None"} /><Info label="Physician" value={student.physicianName || "—"} /><Info label="Physician phone" value={student.physicianPhone || "—"} /><Info label="Transportation" value={student.transportation || "—"} />
       </Card>
       <div className="grid gap-4 lg:grid-cols-2">
         <Card><h3 className="font-bold text-navy">Required forms & documents</h3>{state.documents.filter((d) => d.familyId === student.familyId).slice(0, 6).map((d) => <p className="mt-2 flex justify-between" key={d.id}>{d.type}<StatusBadge status={d.status} /></p>)}</Card>
-        <Card><h3 className="font-bold text-navy">Emergency contacts & authorized pickup</h3><p className="mt-2 text-slate-600">{family.emergencyContacts.join(" • ")}</p><p className="mt-3 text-slate-600">Authorized pickup: parents, listed grandparents, and approved carpool contacts.</p></Card>
+        <Card><h3 className="font-bold text-navy">Emergency contacts & authorized pickup</h3><p className="mt-2 text-slate-600">{family.emergencyContacts.join(" • ") || "No family emergency contacts saved yet."}</p><p className="mt-3 text-slate-600">Student emergency notes: {student.emergencyInfo || "None"}</p><p className="mt-3 text-slate-600">Authorized pickup: {student.authorizedPickup || "Parents, listed grandparents, and approved carpool contacts."}</p></Card>
       </div>
       {admin && <Card><h3 className="font-bold text-navy">Internal notes</h3><p className="mt-2 text-slate-600">Office note: verify medical plan before final enrollment packet is released.</p></Card>}
     </div>
@@ -2462,8 +2568,8 @@ function MiniChart({ title, data }: { title: string; data: Record<string, number
   return <Card><h3 className="font-bold text-navy">{title}</h3><div className="mt-4 space-y-3">{Object.entries(data).map(([label, value]) => <div key={label}><div className="mb-1 flex justify-between text-sm"><span>{label}</span><span className="font-bold">{typeof value === "number" && value > 1000 ? currency(value) : value}</span></div><div className="h-2 rounded-full bg-slate-100"><div className="h-2 rounded-full bg-gold" style={{ width: `${(value / max) * 100}%` }} /></div></div>)}</div></Card>;
 }
 
-function Empty() {
-  return <Card><div className="flex items-center gap-3 text-slate-600"><AlertCircle className="text-gold-dark" /> No matching records found.</div></Card>;
+function Empty({ title = "No matching records found.", text }: { title?: string; text?: string } = {}) {
+  return <Card><div className="flex items-start gap-3 text-slate-600"><AlertCircle className="mt-0.5 text-gold-dark" /><div><p className="font-semibold text-navy">{title}</p>{text && <p className="mt-1 text-sm">{text}</p>}</div></div></Card>;
 }
 
 function countBy<T extends Record<string, unknown>>(items: T[], key: keyof T) {
