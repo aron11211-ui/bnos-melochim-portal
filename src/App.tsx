@@ -2475,9 +2475,11 @@ function UsersAccess({ currentRole, notify }: { currentRole: Role; notify: (mess
   const [families, setFamilies] = useState<FamilyOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [inviting, setInviting] = useState(false);
+  const [creatingParent, setCreatingParent] = useState(false);
   const [inviteMessage, setInviteMessage] = useState<string | null>(null);
   const [inviteError, setInviteError] = useState<string | null>(null);
   const [inviteSetupLink, setInviteSetupLink] = useState<string | null>(null);
+  const [temporaryParentLogin, setTemporaryParentLogin] = useState<{ email: string; password: string; family: string } | null>(null);
   const [selectedUser, setSelectedUser] = useState<AccessUser | null>(null);
   const [accessDraft, setAccessDraft] = useState<{ role: Role; status: AccountStatus }>({ role: "parent", status: "active" });
   const [accessSaving, setAccessSaving] = useState(false);
@@ -2606,6 +2608,48 @@ function UsersAccess({ currentRole, notify }: { currentRole: Role; notify: (mess
     await refreshUsers();
   };
 
+  const createParentLogin = async () => {
+    setInviteError(null);
+    setInviteMessage(null);
+    setInviteSetupLink(null);
+    setTemporaryParentLogin(null);
+    const validationError = validateInvite();
+    if (validationError) return setInviteError(validationError);
+    if (invite.role !== "parent") return setInviteError("Temporary login creation is only for parent accounts.");
+    if (currentRole !== "super_admin") return setInviteError("Only System Administration can create parent logins directly.");
+    if (!supabase) return setInviteError("Supabase is not configured.");
+    const { data: sessionData } = await supabase.auth.getSession();
+    const { data: refreshedSessionData } = await supabase.auth.refreshSession();
+    const accessToken = refreshedSessionData.session?.access_token ?? sessionData.session?.access_token;
+    if (!accessToken) return setInviteError("Your session expired. Please sign out and sign in again.");
+
+    setCreatingParent(true);
+    const { data, error } = await supabase.functions.invoke("create-parent-account", {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      body: {
+        email: invite.email.trim(),
+        first_name: invite.first_name.trim(),
+        last_name: invite.last_name.trim(),
+        phone: invite.phone.trim(),
+        family_id: invite.family_id,
+      },
+    });
+    setCreatingParent(false);
+
+    if (error || data?.error) {
+      const message = typeof data?.error === "string" ? data.error : error?.message || "Parent login could not be created.";
+      return setInviteError(message);
+    }
+
+    const password = typeof data?.temporary_password === "string" ? data.temporary_password : "";
+    const familyName = typeof data?.family_name === "string" ? data.family_name : selectedFamily?.family_name ?? "selected family";
+    setTemporaryParentLogin({ email: invite.email.trim().toLowerCase(), password, family: familyName });
+    setInviteMessage(`Parent login created for ${invite.email.trim()} for ${familyName}.`);
+    notify(`Parent login created for ${invite.email.trim()}.`);
+    setInvite({ email: "", first_name: "", last_name: "", phone: "", role: "parent", family_id: "" });
+    await refreshUsers();
+  };
+
   const saveAccessChanges = async () => {
     setAccessError(null);
     setAccessMessage(null);
@@ -2670,6 +2714,20 @@ function UsersAccess({ currentRole, notify }: { currentRole: Role; notify: (mess
               </div>
             </div>
           )}
+          {temporaryParentLogin && (
+            <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-950">
+              <p className="font-bold">Parent login is ready</p>
+              <p className="mt-1">Family: {temporaryParentLogin.family}</p>
+              <div className="mt-3 grid gap-2 md:grid-cols-2">
+                <label className="font-semibold">Email<input readOnly value={temporaryParentLogin.email} className="mt-1 w-full rounded-xl border bg-white px-3 py-2 text-slate-700" /></label>
+                <label className="font-semibold">Temporary password<input readOnly value={temporaryParentLogin.password} className="mt-1 w-full rounded-xl border bg-white px-3 py-2 font-mono text-slate-700" /></label>
+              </div>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button type="button" onClick={() => void navigator.clipboard.writeText(`${temporaryParentLogin.email}\n${temporaryParentLogin.password}`).then(() => notify("Parent login copied."))} className="rounded-xl bg-navy px-4 py-2 font-bold text-white">Copy login</button>
+                <Link to="/login" className="rounded-xl border border-emerald-700 px-4 py-2 font-bold text-emerald-900">Open login page</Link>
+              </div>
+            </div>
+          )}
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
             <label className="text-sm font-semibold text-slate-700">Email<input className="mt-1 w-full rounded-xl border px-4 py-3" type="email" value={invite.email} onChange={(event) => setInvite({ ...invite, email: event.target.value })} /></label>
             <label className="text-sm font-semibold text-slate-700">First name<input className="mt-1 w-full rounded-xl border px-4 py-3" value={invite.first_name} onChange={(event) => setInvite({ ...invite, first_name: event.target.value })} /></label>
@@ -2686,6 +2744,15 @@ function UsersAccess({ currentRole, notify }: { currentRole: Role; notify: (mess
             )}
           </div>
           {invite.role === "parent" && selectedFamily && <p className="text-sm font-semibold text-navy">Parent will be connected to {selectedFamily.family_name}.</p>}
+          {canInviteStaff && invite.role === "parent" && (
+            <div className="rounded-2xl border border-gold/40 bg-gold/10 p-4">
+              <p className="font-bold text-navy">Having trouble with email invitation links?</p>
+              <p className="mt-1 text-sm text-slate-700">Create an active parent login with a temporary password. Share it privately with the parent and ask them to change it after signing in.</p>
+              <button type="button" disabled={creatingParent || inviting} onClick={() => void createParentLogin()} className="mt-3 rounded-xl bg-navy px-5 py-3 font-bold text-white hover:bg-burgundy disabled:opacity-60">
+                {creatingParent ? "Creating..." : "Create Parent Login"}
+              </button>
+            </div>
+          )}
         </form>
       </Card>
       <Card>
