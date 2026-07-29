@@ -105,6 +105,8 @@ type DocumentItem = {
   uploadDate?: string;
   rejectionReason?: string;
   staffNote?: string;
+  storageBucket?: string;
+  storagePath?: string;
 };
 
 type Agreement = {
@@ -552,6 +554,8 @@ async function loadPortalData(client: SupabaseClient, profile: Profile): Promise
       uploadDate: doc.uploaded_at ?? undefined,
       rejectionReason: doc.rejection_reason ?? undefined,
       staffNote: doc.staff_note ?? undefined,
+      storageBucket: doc.storage_bucket ?? undefined,
+      storagePath: doc.storage_path ?? undefined,
     })),
     agreements: (agreements ?? []).flatMap((agreement: any) => {
       const familyTargets = appFamilies.length ? appFamilies : [emptyFamily];
@@ -1274,15 +1278,42 @@ function ParentDashboard({ state, family }: { state: AppState; family: Family })
 
 function MyFamily({ state, setState, family, notify }: { state: AppState; setState: React.Dispatch<React.SetStateAction<AppState>>; family: Family; notify: (message: string) => void }) {
   const [draft, setDraft] = useState(family);
-  const save = (event: FormEvent) => {
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const save = async (event: FormEvent) => {
     event.preventDefault();
-    if (!draft.name || !draft.email || !draft.phone) return notify("Please complete family name, email, and phone.");
+    setError("");
+    if (!draft.name || !draft.email || !draft.phone) return setError("Please complete family name, email, and phone.");
+    if (!supabase) return setError("Supabase is not configured, so family information cannot be saved.");
+    const familyDbId = family.dbId ?? family.id;
+    if (!familyDbId || familyDbId === "no-family-linked") return setError("This account is not linked to a family record yet.");
+    setSaving(true);
+    const { error: saveError } = await supabase
+      .from("families")
+      .update({
+        family_name: draft.name.trim(),
+        address_line1: draft.address.trim() || null,
+        city: draft.city.trim() || null,
+        state: draft.state.trim() || null,
+        postal_code: draft.zip.trim() || null,
+        primary_phone: draft.phone.trim(),
+        primary_email: draft.email.trim(),
+        shul: draft.shul.trim() || null,
+        maternal_grandparents: draft.maternalGrandparents.trim() || null,
+        paternal_grandparents: draft.paternalGrandparents.trim() || null,
+        guardians: draft.parents,
+        emergency_contacts: draft.emergencyContacts,
+      })
+      .eq("id", familyDbId);
+    setSaving(false);
+    if (saveError) return setError(saveError.message || "Family information could not be saved.");
     setState({ ...state, families: state.families.map((f) => (f.id === family.id ? draft : f)) });
-    notify("Family information saved.");
+    notify("Family information saved to Supabase.");
   };
   return (
     <form onSubmit={save} className="space-y-6">
       <PageTitle title="My Family" subtitle="Household, parent/guardian, employment, shul, emergency, and grandparent information." />
+      {error && <p className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm font-semibold text-red-700">{error}</p>}
       <Card className="grid gap-4 md:grid-cols-2">
         {(["name", "address", "city", "state", "zip", "phone", "email", "shul", "maternalGrandparents", "paternalGrandparents"] as (keyof Family)[]).map((field) => (
           <label key={field} className="text-sm font-semibold text-slate-600">
@@ -1307,7 +1338,7 @@ function MyFamily({ state, setState, family, notify }: { state: AppState; setSta
         <h3 className="font-bold text-navy">Emergency contacts</h3>
         <p className="mt-2 text-slate-600">{draft.emergencyContacts.join(" • ")}</p>
       </Card>
-      <button className="rounded-2xl bg-navy px-5 py-3 font-bold text-white">Save Family Profile</button>
+      <button disabled={saving} className="rounded-2xl bg-navy px-5 py-3 font-bold text-white disabled:opacity-60">{saving ? "Saving..." : "Save Family Profile"}</button>
     </form>
   );
 }
@@ -1335,36 +1366,124 @@ function Children({ state, familyId }: { state: AppState; familyId: string }) {
 
 function RegistrationWizard({ state, setState, family, notify }: { state: AppState; setState: React.Dispatch<React.SetStateAction<AppState>>; family: Family; notify: (message: string) => void }) {
   const steps = [
-    { key: "welcome", title: "Welcome" },
+    { key: "welcome", title: "Start" },
     { key: "family_information", title: "Family information" },
-    { key: "parents_guardians", title: "Parents/guardians" },
-    { key: "review_children", title: "Review children" },
+    { key: "parents_guardians", title: "Parents & guardians" },
     { key: "student_information", title: "Student information" },
-    { key: "emergency_medical", title: "Emergency/medical" },
+    { key: "emergency_medical", title: "Emergency & medical" },
     { key: "transportation", title: "Transportation" },
-    { key: "government_eligibility", title: "Government eligibility" },
-    { key: "policies", title: "Policies" },
+    { key: "documents", title: "Documents" },
+    { key: "policies", title: "Policies & permissions" },
     { key: "tuition_review", title: "Tuition review" },
-    { key: "payment_plan", title: "Payment plan" },
-    { key: "final_checklist", title: "Final checklist" },
+    { key: "review", title: "Review" },
+    { key: "signature_submit", title: "Signature & submit" },
   ];
   const [step, setStep] = useState(0);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
+  const [draftFamily, setDraftFamily] = useState(family);
+  const [draftStudents, setDraftStudents] = useState(state.students.filter((s) => s.familyId === family.id));
+  const [acknowledgments, setAcknowledgments] = useState<Record<string, boolean>>({
+    handbook: false,
+    medicalConsent: false,
+    tuitionReviewed: false,
+    accuracy: false,
+  });
+  const [signer, setSigner] = useState("");
+  const [signatureConfirmed, setSignatureConfirmed] = useState(false);
   const currentStep = steps[step];
+  const familyDocs = state.documents.filter((doc) => doc.familyId === family.id);
+  const familyAgreements = state.agreements.filter((agreement) => agreement.familyId === family.id);
+  const account = state.tuition.find((item) => item.familyId === family.id);
+  const documentBlockers = familyDocs.filter((doc) => ["Missing", "Rejected", "Expired", "Not Started"].includes(doc.status));
+  const agreementBlockers = familyAgreements.filter((agreement) => agreement.status === "Awaiting Signature");
+  const totalBlockers = documentBlockers.length + agreementBlockers.length;
+  const setFamilyField = (field: keyof Family, value: string) => setDraftFamily((current) => ({ ...current, [field]: value }));
+  const setParentField = (index: number, field: keyof ParentGuardian, value: string) =>
+    setDraftFamily((current) => ({ ...current, parents: current.parents.map((parent, parentIndex) => (parentIndex === index ? { ...parent, [field]: value } : parent)) }));
+  const setStudentField = (id: string, field: keyof Student, value: string) =>
+    setDraftStudents((current) => current.map((student) => (student.id === id ? { ...student, [field]: value } : student)));
+  const dbStatus = (value: string) => value.toLowerCase().replaceAll(" ", "_");
+  const validateCurrentStep = () => {
+    if (step === 1 && (!draftFamily.email.trim() || !draftFamily.phone.trim())) return "Primary email and phone are required.";
+    if (step === 2 && !draftFamily.parents.some((parent) => parent.name.trim() && parent.phone.trim())) return "At least one parent or guardian must have a name and phone number.";
+    if (step === 3 && draftStudents.some((student) => !student.legalName.trim() || !student.grade.trim())) return "Each student must have a legal name and grade.";
+    if (step === 7 && !acknowledgments.handbook) return "Please acknowledge that you reviewed the parent handbook.";
+    if (step === 9 && totalBlockers > 0) return "Please complete missing documents and agreements before final submission.";
+    if (step === 10 && (!signer.trim() || !signatureConfirmed || !acknowledgments.accuracy)) return "Type your name, confirm the signature checkbox, and certify the information is accurate.";
+    return "";
+  };
   const save = async (exit = false) => {
-    if (step === 1 && !family.email) return setError("Primary email is required before continuing.");
+    const validation = validateCurrentStep();
+    if (validation) return setError(validation);
     if (!supabase) return setError("Supabase is not configured, so registration cannot be saved yet.");
+    const client = supabase;
     const familyDbId = family.dbId ?? family.id;
     if (!familyDbId || familyDbId === "no-family-linked") return setError("This account is not linked to a family record yet.");
     setError("");
-    const progress = Math.max(family.registrationPercent, Math.round(((step + 1) / steps.length) * 100));
-    const status = progress >= 100 ? "submitted" : "in_progress";
+    const isFinalSubmit = step === steps.length - 1 && !exit;
+    const progress = isFinalSubmit ? 100 : Math.max(family.registrationPercent, Math.round(((step + 1) / steps.length) * 100));
+    const status = isFinalSubmit ? "submitted" : "in_progress";
     const completedSections = Math.max(step + 1, Math.round((progress / 100) * steps.length));
     const remainingItems = Math.max(steps.length - completedSections, 0);
 
     setSaving(true);
-    const { data: existingRegistration, error: lookupError } = await supabase
+    const { error: familySaveError } = await client
+      .from("families")
+      .update({
+        family_name: draftFamily.name.trim(),
+        address_line1: draftFamily.address.trim() || null,
+        city: draftFamily.city.trim() || null,
+        state: draftFamily.state.trim() || null,
+        postal_code: draftFamily.zip.trim() || null,
+        primary_email: draftFamily.email.trim(),
+        primary_phone: draftFamily.phone.trim(),
+        shul: draftFamily.shul.trim() || null,
+        maternal_grandparents: draftFamily.maternalGrandparents.trim() || null,
+        paternal_grandparents: draftFamily.paternalGrandparents.trim() || null,
+        guardians: draftFamily.parents,
+        emergency_contacts: draftFamily.emergencyContacts,
+        registration_status: status,
+        registration_percent: progress,
+      })
+      .eq("id", familyDbId);
+    if (familySaveError) {
+      setSaving(false);
+      return setError(familySaveError.message || "Family information could not be saved.");
+    }
+
+    const studentResults = await Promise.all(
+      draftStudents.map((student) =>
+        client
+          .from("students")
+          .update({
+            legal_name: student.legalName.trim(),
+            preferred_name: student.preferredName.trim() || student.legalName.trim(),
+            date_of_birth: student.dob || null,
+            gender: student.gender.trim() || null,
+            grade: student.grade.trim(),
+            program: student.program.trim() || null,
+            new_returning: student.newReturning,
+            medical_alerts: student.medicalAlerts.trim() || "None",
+            previous_school: student.previousSchool.trim() || null,
+            physician_name: student.physicianName.trim() || null,
+            physician_phone: student.physicianPhone.trim() || null,
+            emergency_info: student.emergencyInfo.trim() || null,
+            authorized_pickup: student.authorizedPickup.split(",").map((item) => item.trim()).filter(Boolean),
+            transportation: student.transportation.trim() || null,
+            registration_status: dbStatus(student.registrationStatus),
+            progress,
+          })
+          .eq("id", student.id),
+      ),
+    );
+    const studentSaveError = studentResults.find((result) => result.error)?.error;
+    if (studentSaveError) {
+      setSaving(false);
+      return setError(studentSaveError.message || "Student information could not be saved.");
+    }
+
+    const { data: existingRegistration, error: lookupError } = await client
       .from("registrations")
       .select("id")
       .eq("family_id", familyDbId)
@@ -1387,40 +1506,41 @@ function RegistrationWizard({ state, setState, family, notify }: { state: AppSta
     };
 
     const registrationResult = existingRegistration?.id
-      ? await supabase.from("registrations").update(registrationPayload).eq("id", existingRegistration.id).select("id").single()
-      : await supabase.from("registrations").insert(registrationPayload).select("id").single();
+      ? await client.from("registrations").update(registrationPayload).eq("id", existingRegistration.id).select("id").single()
+      : await client.from("registrations").insert(registrationPayload).select("id").single();
 
     if (registrationResult.error || !registrationResult.data) {
       setSaving(false);
       return setError(registrationResult.error?.message || "Registration progress could not be saved.");
     }
 
-    const familyStudents = state.students.filter((s) => s.familyId === family.id);
-    const account = state.tuition.find((item) => item.familyId === family.id);
     const stepData = {
       saved_at: new Date().toISOString(),
       saved_from: "parent_portal",
       family: {
-        id: family.id,
+        id: draftFamily.id,
         db_id: familyDbId,
-        name: family.name,
-        email: family.email,
-        phone: family.phone,
-        address: [family.address, family.city, family.state, family.zip].filter(Boolean).join(", "),
+        name: draftFamily.name,
+        email: draftFamily.email,
+        phone: draftFamily.phone,
+        address: [draftFamily.address, draftFamily.city, draftFamily.state, draftFamily.zip].filter(Boolean).join(", "),
       },
-      students: familyStudents.map((student) => ({
+      students: draftStudents.map((student) => ({
         id: student.id,
         legal_name: student.legalName,
         preferred_name: student.preferredName,
         grade: student.grade,
+        medical_alerts: student.medicalAlerts,
         registration_status: student.registrationStatus,
         transportation: student.transportation,
       })),
-      documents: state.documents.filter((doc) => doc.familyId === family.id).map((doc) => ({ id: doc.id, type: doc.type, status: doc.status })),
+      documents: familyDocs.map((doc) => ({ id: doc.id, type: doc.type, status: doc.status })),
+      acknowledgments,
+      signer: isFinalSubmit ? signer.trim() : null,
       tuition: account ? { plan: account.plan, balance: total(account) - account.paid, next_due: account.nextDue } : null,
     };
 
-    const { error: stepError } = await supabase.from("registration_steps").upsert(
+    const { error: stepError } = await client.from("registration_steps").upsert(
       {
         registration_id: registrationResult.data.id,
         step_key: currentStep.key,
@@ -1437,31 +1557,46 @@ function RegistrationWizard({ state, setState, family, notify }: { state: AppSta
       return setError(stepError.message || "Registration section could not be saved.");
     }
 
-    setState({ ...state, families: state.families.map((f) => (f.id === family.id ? { ...f, registrationPercent: progress, status: progress >= 100 ? "Submitted" : "In Progress" } : f)) });
+    setState({
+      ...state,
+      families: state.families.map((f) => (f.id === family.id ? { ...draftFamily, registrationPercent: progress, status: progress >= 100 ? "Submitted" : "In Progress" } : f)),
+      students: state.students.map((student) => draftStudents.find((draft) => draft.id === student.id) ? { ...draftStudents.find((draft) => draft.id === student.id)!, progress } : student),
+    });
     setSaving(false);
-    notify(exit ? "Registration section saved to Supabase. You can return anytime." : "Registration section saved to Supabase.");
+    notify(isFinalSubmit ? "Registration submitted to the school office." : exit ? "Registration section saved to Supabase. You can return anytime." : "Registration section saved to Supabase.");
     if (!exit && step < steps.length - 1) setStep(step + 1);
   };
   return (
     <div className="space-y-6">
-      <PageTitle title="Registration Wizard" subtitle="Your progress is saved as you move through the form, and shared family information is reused across all children." />
-      <Card>
-        <div className="flex items-center justify-between"><p className="font-bold text-navy">Step {step + 1} of {steps.length}: {currentStep.title}</p><StatusBadge status={saving ? "Saving" : step < 4 ? "Family shared" : "Multi-child aware"} /></div>
+      <PageTitle title="Registration" subtitle="A guided family registration flow. Save anytime, come back later, and submit only when every required item is complete." />
+      <Card className="bg-[linear-gradient(135deg,#10233f,#7b0024)] text-white">
+        <div className="grid gap-4 lg:grid-cols-[1fr_auto] lg:items-center">
+          <div>
+            <p className="text-sm font-bold text-gold">School Year 2026–2027 / תשפ״ז</p>
+            <h3 className="mt-2 text-2xl font-bold">Step {step + 1} of {steps.length}: {currentStep.title}</h3>
+            <p className="mt-2 text-sm text-ivory/90">{Math.round(((step + 1) / steps.length) * 100)}% through this guided checklist · {totalBlockers} item{totalBlockers === 1 ? "" : "s"} still blocking final submission</p>
+          </div>
+          <StatusBadge status={saving ? "Saving" : "Autosave ready"} />
+        </div>
         <div className="mt-4"><Progress value={((step + 1) / steps.length) * 100} /></div>
         <div className="mt-4 flex flex-wrap gap-2">
-          {steps.map((item, index) => <span key={item.key} className={`rounded-full px-3 py-1 text-xs font-bold ${index < step ? "bg-emerald-50 text-emerald-700" : index === step ? "bg-gold/20 text-gold-dark" : "bg-slate-100 text-slate-500"}`}>{index < step ? "✓ " : ""}{index + 1}</span>)}
+          {steps.map((item, index) => <button key={item.key} type="button" onClick={() => setStep(index)} className={`rounded-full px-3 py-1 text-xs font-bold ${index < step ? "bg-emerald-50 text-emerald-700" : index === step ? "bg-gold text-navy" : "bg-white/10 text-white"}`} aria-label={`Go to ${item.title}`}>{index < step ? "✓ " : ""}{index + 1}</button>)}
         </div>
       </Card>
       <Card>
         <h3 className="text-2xl font-bold text-navy">{currentStep.title}</h3>
-        <p className="mt-3 text-slate-600">
-          {step === 0 && "Welcome. The office uses this guided workflow to gather all family, student, medical, policy, and tuition information."}
-          {step === 1 && `Confirm household details for the ${family.name} family: ${family.address}, ${family.city}, ${family.state} ${family.zip}.`}
-          {step === 2 && `Guardians on file: ${family.parents.map((p) => p.name).join(" and ")}.`}
-          {step === 3 && `Children included: ${state.students.filter((s) => s.familyId === family.id).map((s) => s.preferredName).join(", ")}.`}
-          {step >= 4 && "This step stores student-specific details without making the family re-enter household information."}
-        </p>
         {error && <p className="mt-4 rounded-xl bg-red-50 p-3 text-sm font-semibold text-red-700">{error}</p>}
+        {step === 0 && <div className="mt-5 grid gap-4 md:grid-cols-3"><Info label="Family" value={draftFamily.name} /><Info label="Students" value={String(draftStudents.length)} /><Info label="Missing before submit" value={String(totalBlockers)} /><p className="md:col-span-3 text-slate-600">We’ll walk you through household information, each child, emergency and medical details, transportation, documents, policies, tuition review, and final signature.</p></div>}
+        {step === 1 && <div className="mt-5 grid gap-3 md:grid-cols-2">{(["name", "address", "city", "state", "zip", "phone", "email", "shul"] as (keyof Family)[]).map((field) => <label key={field} className="text-sm font-semibold text-slate-700">{String(field).replace(/([A-Z])/g, " $1")}<input className="mt-1 w-full rounded-xl border px-4 py-3" value={String(draftFamily[field] ?? "")} onChange={(event) => setFamilyField(field, event.target.value)} /></label>)}</div>}
+        {step === 2 && <div className="mt-5 grid gap-4 md:grid-cols-2">{draftFamily.parents.map((parent, index) => <div key={`${parent.relationship}-${index}`} className="rounded-2xl bg-ivory p-4"><p className="font-bold text-navy">{parent.relationship || `Guardian ${index + 1}`}</p><label className="mt-3 block text-sm font-semibold text-slate-700">Name<input className="mt-1 w-full rounded-xl border px-4 py-3" value={parent.name} onChange={(event) => setParentField(index, "name", event.target.value)} /></label><label className="mt-3 block text-sm font-semibold text-slate-700">Phone<input className="mt-1 w-full rounded-xl border px-4 py-3" value={parent.phone} onChange={(event) => setParentField(index, "phone", event.target.value)} /></label><label className="mt-3 block text-sm font-semibold text-slate-700">Email<input className="mt-1 w-full rounded-xl border px-4 py-3" value={parent.email} onChange={(event) => setParentField(index, "email", event.target.value)} /></label><label className="mt-3 block text-sm font-semibold text-slate-700">Employer<input className="mt-1 w-full rounded-xl border px-4 py-3" value={parent.employer} onChange={(event) => setParentField(index, "employer", event.target.value)} /></label></div>)}</div>}
+        {step === 3 && <div className="mt-5 grid gap-4">{draftStudents.map((student) => <div key={student.id} className="rounded-2xl border border-slate-200 p-4"><h4 className="font-bold text-navy">{student.preferredName || student.legalName}</h4><div className="mt-3 grid gap-3 md:grid-cols-3"><label className="text-sm font-semibold text-slate-700">Legal name<input className="mt-1 w-full rounded-xl border px-4 py-3" value={student.legalName} onChange={(event) => setStudentField(student.id, "legalName", event.target.value)} /></label><label className="text-sm font-semibold text-slate-700">Preferred name<input className="mt-1 w-full rounded-xl border px-4 py-3" value={student.preferredName} onChange={(event) => setStudentField(student.id, "preferredName", event.target.value)} /></label><label className="text-sm font-semibold text-slate-700">Date of birth<input type="date" className="mt-1 w-full rounded-xl border px-4 py-3" value={student.dob} onChange={(event) => setStudentField(student.id, "dob", event.target.value)} /></label><label className="text-sm font-semibold text-slate-700">Grade<input className="mt-1 w-full rounded-xl border px-4 py-3" value={student.grade} onChange={(event) => setStudentField(student.id, "grade", event.target.value)} /></label><label className="text-sm font-semibold text-slate-700">Program<input className="mt-1 w-full rounded-xl border px-4 py-3" value={student.program} onChange={(event) => setStudentField(student.id, "program", event.target.value)} /></label><label className="text-sm font-semibold text-slate-700">Previous school<input className="mt-1 w-full rounded-xl border px-4 py-3" value={student.previousSchool} onChange={(event) => setStudentField(student.id, "previousSchool", event.target.value)} /></label></div></div>)}</div>}
+        {step === 4 && <div className="mt-5 grid gap-4">{draftStudents.map((student) => <div key={student.id} className="rounded-2xl border border-slate-200 p-4"><h4 className="font-bold text-navy">{student.preferredName || student.legalName}</h4><div className="mt-3 grid gap-3 md:grid-cols-2"><label className="text-sm font-semibold text-slate-700">Medical alerts<input className="mt-1 w-full rounded-xl border px-4 py-3" value={student.medicalAlerts} onChange={(event) => setStudentField(student.id, "medicalAlerts", event.target.value)} /></label><label className="text-sm font-semibold text-slate-700">Physician name<input className="mt-1 w-full rounded-xl border px-4 py-3" value={student.physicianName} onChange={(event) => setStudentField(student.id, "physicianName", event.target.value)} /></label><label className="text-sm font-semibold text-slate-700">Physician phone<input className="mt-1 w-full rounded-xl border px-4 py-3" value={student.physicianPhone} onChange={(event) => setStudentField(student.id, "physicianPhone", event.target.value)} /></label><label className="text-sm font-semibold text-slate-700">Authorized pickup contacts<input className="mt-1 w-full rounded-xl border px-4 py-3" value={student.authorizedPickup} onChange={(event) => setStudentField(student.id, "authorizedPickup", event.target.value)} /></label></div><label className="mt-3 block text-sm font-semibold text-slate-700">Emergency information<textarea className="mt-1 min-h-24 w-full rounded-xl border px-4 py-3" value={student.emergencyInfo} onChange={(event) => setStudentField(student.id, "emergencyInfo", event.target.value)} /></label></div>)}</div>}
+        {step === 5 && <div className="mt-5 grid gap-4">{draftStudents.map((student) => <label key={student.id} className="block rounded-2xl border border-slate-200 p-4 text-sm font-semibold text-slate-700">{student.preferredName || student.legalName} transportation<input className="mt-2 w-full rounded-xl border px-4 py-3" value={student.transportation} onChange={(event) => setStudentField(student.id, "transportation", event.target.value)} placeholder="Bus route, parent pickup, carpool, walk authorization..." /></label>)}</div>}
+        {step === 6 && <div className="mt-5 grid gap-3">{familyDocs.map((doc) => <div key={doc.id} className="flex flex-col gap-3 rounded-2xl border border-slate-200 p-4 sm:flex-row sm:items-center sm:justify-between"><div><p className="font-bold text-navy">{doc.type}</p><p className="text-sm text-slate-600">{doc.category} · {doc.uploadDate ? `Uploaded ${formatDate(doc.uploadDate)}` : "Not uploaded yet"}</p>{doc.rejectionReason && <p className="mt-2 text-sm text-red-700">{doc.rejectionReason}</p>}</div><div className="flex items-center gap-3"><StatusBadge status={doc.status} /><Link to="/parent/documents" className="rounded-xl bg-navy px-3 py-2 text-sm font-bold text-white">Manage</Link></div></div>)}{!familyDocs.length && <Empty title="No document requirements found" text="The office has not assigned document requirements to this family yet." />}</div>}
+        {step === 7 && <div className="mt-5 space-y-3">{[["handbook", "I reviewed the parent handbook."], ["medicalConsent", "I authorize emergency medical care if the school cannot reach me immediately."], ["tuitionReviewed", "I reviewed the tuition summary and understand the balance shown."], ["accuracy", "I certify that the information provided is accurate."]].map(([key, label]) => <label key={key} className="flex gap-3 rounded-2xl bg-ivory p-4 font-semibold text-slate-700"><input type="checkbox" checked={acknowledgments[key]} onChange={(event) => setAcknowledgments((current) => ({ ...current, [key]: event.target.checked }))} />{label}</label>)}</div>}
+        {step === 8 && <div className="mt-5 grid gap-4 md:grid-cols-3"><Info label="Plan" value={account?.plan ?? "Not assigned"} /><Info label="Total obligation" value={account ? currency(total(account)) : "$0"} /><Info label="Remaining balance" value={account ? currency(total(account) - account.paid) : "$0"} /><Info label="Next payment" value={account ? upcomingPayment(account) : "Not scheduled"} /><Link to="/parent/tuition" className="rounded-xl bg-navy px-4 py-3 text-center font-bold text-white md:col-span-2">Open tuition details</Link></div>}
+        {step === 9 && <div className="mt-5 grid gap-4 md:grid-cols-2"><div className="rounded-2xl bg-ivory p-4"><h4 className="font-bold text-navy">Family summary</h4><p className="mt-2 text-sm text-slate-600">{draftFamily.name} · {draftFamily.email} · {draftFamily.phone}</p><p className="mt-1 text-sm text-slate-600">{[draftFamily.address, draftFamily.city, draftFamily.state, draftFamily.zip].filter(Boolean).join(", ")}</p></div><div className="rounded-2xl bg-ivory p-4"><h4 className="font-bold text-navy">Students</h4><p className="mt-2 text-sm text-slate-600">{draftStudents.map((student) => `${student.legalName} (${student.grade})`).join(" · ") || "No students linked."}</p></div><div className="rounded-2xl bg-ivory p-4"><h4 className="font-bold text-navy">Still required</h4><p className="mt-2 text-sm text-slate-600">{totalBlockers ? `${documentBlockers.length} documents and ${agreementBlockers.length} agreements still need attention.` : "Everything required for submission is complete."}</p></div></div>}
+        {step === 10 && <div className="mt-5 grid gap-4"><p className="rounded-2xl bg-ivory p-4 text-slate-700">By submitting, you are sending this registration packet to Bnos Melochim for office review. You can still be asked for corrections if a document is rejected or information is missing.</p><label className="text-sm font-semibold text-slate-700">Typed parent/guardian signature<input className="mt-1 w-full rounded-xl border px-4 py-3" value={signer} onChange={(event) => setSigner(event.target.value)} placeholder="Your legal name" /></label><label className="flex gap-3 rounded-2xl bg-ivory p-4 font-semibold text-slate-700"><input type="checkbox" checked={signatureConfirmed} onChange={(event) => setSignatureConfirmed(event.target.checked)} />My typed name represents my electronic signature.</label></div>}
       </Card>
       <div className="flex flex-wrap gap-3">
         <button className="rounded-xl border border-slate-300 px-4 py-2 font-semibold" disabled={saving || step === 0} onClick={() => setStep(step - 1)}><ChevronLeft className="inline h-4 w-4" /> Back</button>
@@ -1474,15 +1609,65 @@ function RegistrationWizard({ state, setState, family, notify }: { state: AppSta
 
 function Documents({ state, setState, familyId, notify, parent = false }: { state: AppState; setState: React.Dispatch<React.SetStateAction<AppState>>; familyId?: string; notify: (message: string) => void; parent?: boolean }) {
   const [filter, setFilter] = useState("All");
+  const [uploadingId, setUploadingId] = useState("");
+  const [error, setError] = useState("");
   const docs = state.documents.filter((doc) => (!familyId || doc.familyId === familyId) && (filter === "All" || doc.status === filter));
-  const action = (id: string, status: DocStatus) => {
+  const selectedFamily = familyId ? state.families.find((family) => family.id === familyId) : undefined;
+  const action = async (id: string, status: DocStatus) => {
     if (status === "Rejected" && !window.confirm("Reject this document and request a replacement?")) return;
+    if (supabase) {
+      const { error: updateError } = await supabase
+        .from("student_documents")
+        .update({ status: status.toLowerCase().replaceAll(" ", "_"), staff_note: status === "Waived" ? "Requirement waived by staff." : undefined })
+        .eq("id", id);
+      if (updateError) return notify(updateError.message || "Document status could not be saved.");
+    }
     setState({ ...state, documents: state.documents.map((d) => (d.id === id ? { ...d, status, staffNote: status === "Waived" ? "Requirement waived by staff." : d.staffNote } : d)) });
     notify(`Document marked ${status}.`);
+  };
+  const uploadDocument = async (doc: DocumentItem, file?: File) => {
+    setError("");
+    if (!file) return;
+    if (!supabase) return setError("Supabase is not configured, so documents cannot be uploaded.");
+    const familyDbId = selectedFamily?.dbId ?? selectedFamily?.id;
+    if (!familyDbId || familyDbId === "no-family-linked") return setError("This account is not linked to a family record yet.");
+    if (!["application/pdf", "image/jpeg", "image/png"].includes(file.type)) return setError("Upload a PDF, JPG, or PNG file.");
+    if (file.size > 10 * 1024 * 1024) return setError("Document file must be 10MB or smaller.");
+
+    setUploadingId(doc.id);
+    const bucket = doc.category.toLowerCase().includes("medical") ? "medical-documents" : "registration-documents";
+    const safeName = file.name.toLowerCase().replace(/[^a-z0-9.]+/g, "-").replace(/^-|-$/g, "");
+    const storagePath = `${familyDbId}/${doc.id}/${Date.now()}-${safeName}`;
+    const { error: uploadError } = await supabase.storage.from(bucket).upload(storagePath, file, { upsert: false });
+    if (uploadError) {
+      setUploadingId("");
+      return setError(uploadError.message || "Document upload failed.");
+    }
+    const { data: userData } = await supabase.auth.getUser();
+    const uploadedAt = new Date().toISOString();
+    const { error: updateError } = await supabase
+      .from("student_documents")
+      .update({
+        status: "uploaded",
+        storage_bucket: bucket,
+        storage_path: storagePath,
+        uploaded_by: userData.user?.id ?? null,
+        uploaded_at: uploadedAt,
+        rejection_reason: null,
+      })
+      .eq("id", doc.id);
+    setUploadingId("");
+    if (updateError) return setError(updateError.message || "Document record could not be updated after upload.");
+    setState({
+      ...state,
+      documents: state.documents.map((item) => item.id === doc.id ? { ...item, status: "Uploaded", uploadDate: uploadedAt, rejectionReason: undefined, storageBucket: bucket, storagePath } : item),
+    });
+    notify(`${doc.type} uploaded for office review.`);
   };
   return (
     <div className="space-y-6">
       <PageTitle title={parent ? "Required Documents" : "Document Review Queue"} subtitle={parent ? "Track requirements, rejection reasons, and replacement actions." : "Preview, approve, reject, request replacements, waive, and add staff notes."} />
+      {error && <p className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm font-semibold text-red-700">{error}</p>}
       <FilterBar value={filter} setValue={setFilter} options={["All", "Missing", "Uploaded", "Under Review", "Approved", "Rejected", "Expired", "Waived", "Not Started"]} />
       <div className="grid gap-4">
         {docs.map((doc) => (
@@ -1496,13 +1681,16 @@ function Documents({ state, setState, familyId, notify, parent = false }: { stat
               <div className="flex flex-wrap gap-2">
                 <button className="rounded-xl border px-3 py-2 text-sm font-semibold hover:bg-ivory" onClick={() => notify("Document preview opened.")}>Preview</button>
                 {parent ? (
-                  <button className="rounded-xl bg-navy px-3 py-2 text-sm font-semibold text-white" onClick={() => action(doc.id, "Uploaded")}>Replace Document</button>
+                  <label className={`cursor-pointer rounded-xl bg-navy px-3 py-2 text-sm font-semibold text-white ${uploadingId === doc.id ? "opacity-60" : ""}`}>
+                    {uploadingId === doc.id ? "Uploading..." : doc.status === "Uploaded" ? "Replace Document" : "Upload Document"}
+                    <input className="sr-only" type="file" accept="application/pdf,image/jpeg,image/png" disabled={uploadingId === doc.id} onChange={(event) => void uploadDocument(doc, event.target.files?.[0])} />
+                  </label>
                 ) : (
                   <>
-                    <button className="rounded-xl bg-emerald-600 px-3 py-2 text-sm font-semibold text-white" onClick={() => action(doc.id, "Approved")}>Approve</button>
-                    <button className="rounded-xl bg-red-600 px-3 py-2 text-sm font-semibold text-white" onClick={() => action(doc.id, "Rejected")}>Reject</button>
-                    <button className="rounded-xl border px-3 py-2 text-sm font-semibold" onClick={() => action(doc.id, "Missing")}>Request replacement</button>
-                    <button className="rounded-xl border px-3 py-2 text-sm font-semibold" onClick={() => action(doc.id, "Waived")}>Waive</button>
+                    <button className="rounded-xl bg-emerald-600 px-3 py-2 text-sm font-semibold text-white" onClick={() => void action(doc.id, "Approved")}>Approve</button>
+                    <button className="rounded-xl bg-red-600 px-3 py-2 text-sm font-semibold text-white" onClick={() => void action(doc.id, "Rejected")}>Reject</button>
+                    <button className="rounded-xl border px-3 py-2 text-sm font-semibold" onClick={() => void action(doc.id, "Missing")}>Request replacement</button>
+                    <button className="rounded-xl border px-3 py-2 text-sm font-semibold" onClick={() => void action(doc.id, "Waived")}>Waive</button>
                   </>
                 )}
               </div>
@@ -1517,24 +1705,55 @@ function Documents({ state, setState, familyId, notify, parent = false }: { stat
 
 function Agreements({ state, setState, familyId, notify }: { state: AppState; setState: React.Dispatch<React.SetStateAction<AppState>>; familyId: string; notify: (message: string) => void }) {
   const [signer, setSigner] = useState("");
-  const sign = (id: string) => {
+  const [confirmed, setConfirmed] = useState(true);
+  const [savingId, setSavingId] = useState("");
+  const [error, setError] = useState("");
+  const family = state.families.find((item) => item.id === familyId);
+  const sign = async (id: string) => {
+    setError("");
     if (!signer.trim()) return notify("Type signer name before saving acknowledgment.");
-    setState({ ...state, agreements: state.agreements.map((a) => (a.id === id ? { ...a, status: "Signed", signer, dateReviewed: "2026-07-24" } : a)) });
-    notify("Agreement acknowledgment saved.");
+    if (!confirmed) return setError("Please confirm that your typed name represents your signature.");
+    if (!supabase) return setError("Supabase is not configured, so the agreement cannot be signed.");
+    const familyDbId = family?.dbId ?? family?.id;
+    if (!familyDbId || familyDbId === "no-family-linked") return setError("This account is not linked to a family record yet.");
+    const agreementId = id.split(":")[0];
+    setSavingId(id);
+    const { data: userData, error: userError } = await supabase.auth.getUser();
+    if (userError || !userData.user) {
+      setSavingId("");
+      return setError("Your session could not be verified. Please sign in again.");
+    }
+    const signedAt = new Date().toISOString();
+    const { error: signError } = await supabase.from("agreement_signatures").upsert(
+      {
+        agreement_id: agreementId,
+        family_id: familyDbId,
+        user_id: userData.user.id,
+        signer_name: signer.trim(),
+        signed_at: signedAt,
+        user_agent: navigator.userAgent,
+      },
+      { onConflict: "agreement_id,family_id,user_id" },
+    );
+    setSavingId("");
+    if (signError) return setError(signError.message || "Agreement could not be signed.");
+    setState({ ...state, agreements: state.agreements.map((a) => (a.id === id ? { ...a, status: "Signed", signer, dateReviewed: signedAt } : a)) });
+    notify("Agreement acknowledgment saved to Supabase.");
   };
   return (
     <div className="space-y-6">
       <PageTitle title="Agreements" subtitle="Electronic acknowledgments use typed name, checkbox confirmation, and review date." />
       <Card>
+        {error && <p className="mb-3 rounded-xl border border-red-200 bg-red-50 p-3 text-sm font-semibold text-red-700">{error}</p>}
         <label className="font-semibold text-slate-600">Typed signer name<input className="mt-1 w-full rounded-xl border px-3 py-2" value={signer} onChange={(e) => setSigner(e.target.value)} placeholder="Parent / guardian legal name" /></label>
-        <label className="mt-3 flex items-center gap-2 text-sm"><input type="checkbox" defaultChecked /> I agree that my typed name represents my signature.</label>
+        <label className="mt-3 flex items-center gap-2 text-sm"><input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} /> I agree that my typed name represents my signature.</label>
       </Card>
       <div className="grid gap-4 md:grid-cols-2">
         {state.agreements.filter((a) => a.familyId === familyId).map((a) => (
           <Card key={a.id}>
             <div className="flex items-start justify-between gap-3"><h3 className="font-bold text-navy">{a.title}</h3><StatusBadge status={a.status} /></div>
             <p className="mt-2 text-sm text-slate-500">Version {a.version} · Reviewed {a.dateReviewed ? formatDate(a.dateReviewed) : "not yet"} {a.signer ? `· ${a.signer}` : ""}</p>
-            <div className="mt-4 flex gap-2"><button className="rounded-xl border px-3 py-2 text-sm font-semibold" onClick={() => notify(`${a.title} opened for review.`)}>View</button><button className="rounded-xl bg-navy px-3 py-2 text-sm font-semibold text-white" onClick={() => sign(a.id)}>Acknowledge / Sign</button></div>
+            <div className="mt-4 flex gap-2"><button className="rounded-xl border px-3 py-2 text-sm font-semibold" onClick={() => notify(`${a.title} opened for review.`)}>View</button><button disabled={savingId === a.id} className="rounded-xl bg-navy px-3 py-2 text-sm font-semibold text-white disabled:opacity-60" onClick={() => void sign(a.id)}>{savingId === a.id ? "Saving..." : "Acknowledge / Sign"}</button></div>
           </Card>
         ))}
       </div>
